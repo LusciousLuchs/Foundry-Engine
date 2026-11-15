@@ -1,0 +1,113 @@
+#pragma once
+// Vulkan 1.3 context: instance, device, swapchain, frame sync. vulkan-1.dll is
+// loaded at runtime (no import library), so the exe starts under Wine/Proton
+// and on machines without Vulkan (init() just returns false -> fall back to GL).
+#define VK_NO_PROTOTYPES
+#define VK_USE_PLATFORM_WIN32_KHR
+#include <vulkan/vulkan.h>
+#include <cstdint>
+#include <vector>
+
+namespace foundry::rhi::vk {
+
+#define FOUNDRY_VK_GLOBAL_FUNCS(X) X(vkCreateInstance)
+#define FOUNDRY_VK_INSTANCE_FUNCS(X) \
+    X(vkDestroyInstance) X(vkEnumeratePhysicalDevices) X(vkGetPhysicalDeviceProperties) \
+    X(vkGetPhysicalDeviceQueueFamilyProperties) X(vkGetPhysicalDeviceMemoryProperties) \
+    X(vkEnumerateDeviceExtensionProperties) X(vkCreateWin32SurfaceKHR) X(vkDestroySurfaceKHR) \
+    X(vkGetPhysicalDeviceSurfaceSupportKHR) X(vkGetPhysicalDeviceSurfaceCapabilitiesKHR) \
+    X(vkGetPhysicalDeviceSurfaceFormatsKHR) X(vkGetPhysicalDeviceSurfacePresentModesKHR) \
+    X(vkCreateDevice) X(vkGetDeviceProcAddr)
+#define FOUNDRY_VK_DEVICE_FUNCS(X) \
+    X(vkDestroyDevice) X(vkGetDeviceQueue) X(vkCreateSwapchainKHR) X(vkDestroySwapchainKHR) \
+    X(vkGetSwapchainImagesKHR) X(vkCreateImageView) X(vkDestroyImageView) \
+    X(vkCreateCommandPool) X(vkDestroyCommandPool) X(vkAllocateCommandBuffers) \
+    X(vkBeginCommandBuffer) X(vkEndCommandBuffer) X(vkResetCommandBuffer) \
+    X(vkCreateSemaphore) X(vkDestroySemaphore) X(vkCreateFence) X(vkDestroyFence) \
+    X(vkWaitForFences) X(vkResetFences) X(vkAcquireNextImageKHR) X(vkQueueSubmit2) \
+    X(vkQueuePresentKHR) X(vkDeviceWaitIdle) X(vkCmdPipelineBarrier2) \
+    X(vkCmdBeginRendering) X(vkCmdEndRendering) X(vkCreateShaderModule) X(vkDestroyShaderModule) \
+    X(vkCreatePipelineLayout) X(vkDestroyPipelineLayout) X(vkCreateGraphicsPipelines) \
+    X(vkDestroyPipeline) X(vkCmdBindPipeline) X(vkCmdSetViewport) X(vkCmdSetScissor) X(vkCmdDraw) \
+    X(vkCreateBuffer) X(vkDestroyBuffer) X(vkGetBufferMemoryRequirements) X(vkAllocateMemory) \
+    X(vkFreeMemory) X(vkBindBufferMemory) X(vkMapMemory) X(vkUnmapMemory) X(vkCmdCopyImageToBuffer)
+
+struct Fns {
+    PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr = nullptr;
+#define X(n) PFN_##n n = nullptr;
+    FOUNDRY_VK_GLOBAL_FUNCS(X) FOUNDRY_VK_INSTANCE_FUNCS(X) FOUNDRY_VK_DEVICE_FUNCS(X)
+#undef X
+};
+
+constexpr int kFramesInFlight = 2;
+
+struct Frame {
+    VkCommandBuffer cmd = nullptr;
+    VkImage image = nullptr;
+    VkImageView view = nullptr;
+    VkExtent2D extent{};
+    uint32_t imageIndex = 0;
+};
+
+class Context {
+public:
+    ~Context() { shutdown(); }
+    // hwnd/hinstance are the Win32 handles. Returns false (with a message on stderr) if
+    // Vulkan 1.3 is unavailable.
+    bool init(void* hwnd, void* hinstance, uint32_t width, uint32_t height, bool enableValidation = false);
+    void shutdown();
+    // Recreate the swapchain (call on window resize). Returns false while minimized.
+    bool resize(uint32_t width, uint32_t height);
+
+    // Acquires an image and begins recording; the image is ready for rendering
+    // (layout COLOR_ATTACHMENT_OPTIMAL). Returns false if the frame must be skipped.
+    bool beginFrame(Frame& f);
+    void endFrame(const Frame& f);   // presents (and captures if requested)
+
+    // Ask for the next presented frame to be copied to CPU memory (RGBA8).
+    void requestCapture() { capture_ = true; }
+    bool takeCapture(std::vector<uint8_t>& rgba, uint32_t& w, uint32_t& h);
+
+    VkFormat colorFormat() const { return format_; }
+    VkExtent2D extent() const { return extent_; }
+    VkDevice device() const { return dev_; }
+    const Fns& fn() const { return f_; }
+    const char* deviceName() const { return deviceName_; }
+
+private:
+    bool loadLibrary();
+    bool createSwapchain(uint32_t w, uint32_t h);
+    void destroySwapchain();
+    bool findMemoryType(uint32_t bits, VkMemoryPropertyFlags props, uint32_t& out) const;
+
+    void* lib_ = nullptr;
+    Fns f_;
+    VkInstance inst_ = nullptr;
+    VkPhysicalDevice phys_ = nullptr;
+    VkDevice dev_ = nullptr;
+    VkSurfaceKHR surface_ = nullptr;
+    VkQueue queue_ = nullptr;
+    uint32_t queueFamily_ = 0;
+    VkPhysicalDeviceMemoryProperties memProps_{};
+    char deviceName_[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE]{};
+
+    VkSwapchainKHR swapchain_ = nullptr;
+    VkFormat format_ = VK_FORMAT_UNDEFINED;
+    VkExtent2D extent_{};
+    std::vector<VkImage> images_;
+    std::vector<VkImageView> views_;
+    std::vector<VkSemaphore> renderDone_;   // per swapchain image
+
+    VkCommandPool pool_ = nullptr;
+    VkCommandBuffer cmds_[kFramesInFlight]{};
+    VkSemaphore acquire_[kFramesInFlight]{};
+    VkFence fence_[kFramesInFlight]{};
+    int cur_ = 0;
+
+    bool capture_ = false, captured_ = false;
+    VkBuffer capBuf_ = nullptr; VkDeviceMemory capMem_ = nullptr;
+    VkDeviceSize capSize_ = 0;
+    std::vector<uint8_t> capPixels_; uint32_t capW_ = 0, capH_ = 0;
+};
+
+} // namespace foundry::rhi::vk
