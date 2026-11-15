@@ -1,11 +1,18 @@
 # Architecture
 
+## Platform policy
+Windows x64 only, cross-compiled with llvm-mingw (`cmake/mingw-toolchain.cmake`).
+Linux users run the .exe under Wine-GE/Proton-GE: Wine forwards Vulkan (winevulkan)
+and OpenGL to the native driver, so both RHI backends work there. No native Linux
+code paths. Rule: no APIs that Wine lacks (stick to Vulkan 1.3 core, plain Win32).
+Consequence: OpenGL stays as a fallback backend, not a Linux requirement.
+
 ## Goals
 Lightweight, fast, good lighting, reasonable physics, Vulkan primary, OpenGL supported.
 
 ## Layers
     core/      math, memory arenas, job system, logging
-    platform/  window, input (SDL3)
+    platform/  window, input (Win32 or SDL3/GLFW; Windows is the only supported target)
     rhi/       abstract Device/CommandList; vulkan/ and opengl/ backends
     render/    render graph, PBR materials, clustered forward+ lights, shadows
     physics/   interface + Jolt backend (own solver optional later)
