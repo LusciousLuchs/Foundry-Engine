@@ -39,3 +39,10 @@ GPU-driven indirect draws, frame arenas, bindless textures. Profile with Tracy.
 5. OpenGL backend
 6. raylib compat layer + port the game
 7. Profiling and tuning
+
+## Porting status (Gunsmith3D)
+- [x] `compat/raymath.hpp`: every raymath function Gunsmith3D uses (Vector2/3, Matrix, QuaternionTransform, Unproject), verified against the game's bundled raymath.h (`-DFOUNDRY_RAYLIB_DIR=<third_party/raylib/src>`, test `raymath_diff`).
+- [ ] Input and windowing (IsKeyDown, GetMousePosition, GetScreenWidth, ...)
+- [ ] Draw calls (DrawMesh, DrawSphere, DrawLine3D, DrawTriangle3D, 2D shapes, text)
+- [ ] Shaders (LoadShader/SetShaderValue) and rlgl usage
+- [ ] Dear ImGui backend for the RHI
