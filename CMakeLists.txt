@@ -1,0 +1,30 @@
+cmake_minimum_required(VERSION 3.24)
+project(Foundry VERSION 0.1.0 LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+option(FOUNDRY_BUILD_TESTS "Build tests" ON)
+option(FOUNDRY_BACKEND_VULKAN "Build the Vulkan RHI backend" OFF)
+option(FOUNDRY_BACKEND_OPENGL "Build the OpenGL RHI backend" OFF)
+
+add_library(foundry_core INTERFACE)
+target_include_directories(foundry_core INTERFACE engine)
+target_compile_features(foundry_core INTERFACE cxx_std_20)
+if(MSVC)
+  target_compile_options(foundry_core INTERFACE /W4)
+else()
+  target_compile_options(foundry_core INTERFACE -Wall -Wextra -Wpedantic)
+endif()
+
+add_library(foundry_rhi INTERFACE)
+target_link_libraries(foundry_rhi INTERFACE foundry_core)
+
+if(FOUNDRY_BUILD_TESTS)
+  enable_testing()
+  add_executable(foundry_tests tests/main.cpp)
+  target_link_libraries(foundry_tests PRIVATE foundry_core foundry_rhi)
+  add_test(NAME foundry_tests COMMAND foundry_tests)
+endif()
