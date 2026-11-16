@@ -10,14 +10,14 @@ static void barrier(const Fns& f, VkCommandBuffer cmd, VkImage img,
                     VkImageLayout from, VkImageLayout to,
                     VkPipelineStageFlags2 srcStage, VkAccessFlags2 srcAccess,
                     VkPipelineStageFlags2 dstStage, VkAccessFlags2 dstAccess,
-                    VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT) {
+                    VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT, uint32_t baseMip = 0, uint32_t mips = 1) {
     VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
     b.srcStageMask = srcStage; b.srcAccessMask = srcAccess;
     b.dstStageMask = dstStage; b.dstAccessMask = dstAccess;
     b.oldLayout = from; b.newLayout = to;
     b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b.image = img;
-    b.subresourceRange = {aspect, 0, 1, 0, 1};
+    b.subresourceRange = {aspect, baseMip, mips, 0, 1};
     VkDependencyInfo d{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
     d.imageMemoryBarrierCount = 1; d.pImageMemoryBarriers = &b;
     f.vkCmdPipelineBarrier2(cmd, &d);
@@ -86,6 +86,7 @@ bool Context::init(void* hwnd, void* hinstance, uint32_t width, uint32_t height,
     if (!phys_) { std::fprintf(stderr, "No Vulkan 1.3 device with graphics+present found\n"); return false; }
     VkPhysicalDeviceProperties props; f_.vkGetPhysicalDeviceProperties(phys_, &props);
     std::snprintf(deviceName_, sizeof deviceName_, "%s", props.deviceName);
+    limits_ = props.limits;
     f_.vkGetPhysicalDeviceMemoryProperties(phys_, &memProps_);
 
     float prio = 1.0f;
@@ -246,8 +247,54 @@ void Context::destroyImage(Image& img) {
 
 void Context::imageBarrier(VkCommandBuffer cmd, VkImage img, VkImageLayout from, VkImageLayout to,
                            VkPipelineStageFlags2 srcStage, VkAccessFlags2 srcAccess,
-                           VkPipelineStageFlags2 dstStage, VkAccessFlags2 dstAccess, VkImageAspectFlags aspect) {
-    barrier(f_, cmd, img, from, to, srcStage, srcAccess, dstStage, dstAccess, aspect);
+                           VkPipelineStageFlags2 dstStage, VkAccessFlags2 dstAccess, VkImageAspectFlags aspect,
+                           uint32_t baseMip, uint32_t mips) {
+    barrier(f_, cmd, img, from, to, srcStage, srcAccess, dstStage, dstAccess, aspect, baseMip, mips);
+}
+
+bool Context::createColorImage(uint32_t w, uint32_t h, uint32_t mips, Image& out) {
+    VkImageCreateInfo di{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    di.imageType = VK_IMAGE_TYPE_2D; di.format = VK_FORMAT_R8G8B8A8_UNORM; di.extent = {w, h, 1};
+    di.mipLevels = mips; di.arrayLayers = 1; di.samples = VK_SAMPLE_COUNT_1_BIT; di.tiling = VK_IMAGE_TILING_OPTIMAL;
+    di.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    di.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VKCHECK(f_.vkCreateImage(dev_, &di, nullptr, &out.image));
+    VkMemoryRequirements req; f_.vkGetImageMemoryRequirements(dev_, out.image, &req);
+    uint32_t mt = 0;
+    if (!findMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, mt)) return false;
+    VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    mai.allocationSize = req.size; mai.memoryTypeIndex = mt;
+    VKCHECK(f_.vkAllocateMemory(dev_, &mai, nullptr, &out.memory));
+    VKCHECK(f_.vkBindImageMemory(dev_, out.image, out.memory, 0));
+    VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    vi.image = out.image; vi.viewType = VK_IMAGE_VIEW_TYPE_2D; vi.format = VK_FORMAT_R8G8B8A8_UNORM;
+    vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, mips, 0, 1};
+    VKCHECK(f_.vkCreateImageView(dev_, &vi, nullptr, &out.view));
+    return true;
+}
+
+bool Context::submitOneTime(const std::function<void(VkCommandBuffer)>& record) {
+    VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    ai.commandPool = pool_; ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; ai.commandBufferCount = 1;
+    VkCommandBuffer cmd;
+    VKCHECK(f_.vkAllocateCommandBuffers(dev_, &ai, &cmd));
+    VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    f_.vkBeginCommandBuffer(cmd, &bi);
+    record(cmd);
+    f_.vkEndCommandBuffer(cmd);
+    VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    VkFence fence;
+    VKCHECK(f_.vkCreateFence(dev_, &fci, nullptr, &fence));
+    VkCommandBufferSubmitInfo cbi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
+    cbi.commandBuffer = cmd;
+    VkSubmitInfo2 si{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+    si.commandBufferInfoCount = 1; si.pCommandBufferInfos = &cbi;
+    VkResult r = f_.vkQueueSubmit2(queue_, 1, &si, fence);
+    if (r == VK_SUCCESS) f_.vkWaitForFences(dev_, 1, &fence, VK_TRUE, UINT64_MAX);
+    f_.vkDestroyFence(dev_, fence, nullptr);
+    f_.vkFreeCommandBuffers(dev_, pool_, 1, &cmd);
+    return r == VK_SUCCESS;
 }
 
 void Context::destroyBuffer(Buffer& b) {

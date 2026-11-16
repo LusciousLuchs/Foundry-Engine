@@ -21,7 +21,19 @@ enum { CAMERA_PERSPECTIVE = 0, CAMERA_ORTHOGRAPHIC = 1 };
 
 struct Texture { unsigned id; int width, height, mipmaps, format; };
 using Texture2D = Texture;
+struct Image { void* data; int width, height, mipmaps, format; };   // RGBA8 only (PIXELFORMAT_UNCOMPRESSED_R8G8B8A8)
 struct Shader { unsigned id; int* locs; };
+enum { PIXELFORMAT_UNCOMPRESSED_R8G8B8A8 = 7 };
+enum { SHADER_UNIFORM_FLOAT = 0, SHADER_UNIFORM_VEC2, SHADER_UNIFORM_VEC3, SHADER_UNIFORM_VEC4, SHADER_UNIFORM_INT,
+       SHADER_UNIFORM_IVEC2, SHADER_UNIFORM_IVEC3, SHADER_UNIFORM_IVEC4, SHADER_UNIFORM_SAMPLER2D };
+enum { SHADER_LOC_VERTEX_POSITION = 0, SHADER_LOC_VERTEX_TEXCOORD01, SHADER_LOC_VERTEX_TEXCOORD02, SHADER_LOC_VERTEX_NORMAL,
+       SHADER_LOC_VERTEX_TANGENT, SHADER_LOC_VERTEX_COLOR, SHADER_LOC_MATRIX_MVP, SHADER_LOC_MATRIX_VIEW,
+       SHADER_LOC_MATRIX_PROJECTION, SHADER_LOC_MATRIX_MODEL, SHADER_LOC_MATRIX_NORMAL, SHADER_LOC_VECTOR_VIEW,
+       SHADER_LOC_COLOR_DIFFUSE, SHADER_LOC_COLOR_SPECULAR, SHADER_LOC_COLOR_AMBIENT, SHADER_LOC_MAP_ALBEDO };
+enum { TEXTURE_FILTER_POINT = 0, TEXTURE_FILTER_BILINEAR, TEXTURE_FILTER_TRILINEAR, TEXTURE_FILTER_ANISOTROPIC_4X,
+       TEXTURE_FILTER_ANISOTROPIC_8X, TEXTURE_FILTER_ANISOTROPIC_16X };
+enum { TEXTURE_WRAP_REPEAT = 0, TEXTURE_WRAP_CLAMP, TEXTURE_WRAP_MIRROR_REPEAT, TEXTURE_WRAP_MIRROR_CLAMP };
+enum { BLEND_ALPHA = 0, BLEND_ADDITIVE, BLEND_MULTIPLIED, BLEND_ADD_COLORS, BLEND_SUBTRACT_COLORS, BLEND_ALPHA_PREMULTIPLY, BLEND_CUSTOM };
 struct MaterialMap { Texture2D texture; Color color; float value; };
 struct Material { Shader shader; MaterialMap* maps; float params[4]; };
 enum { MATERIAL_MAP_ALBEDO = 0, MATERIAL_MAP_DIFFUSE = 0, MATERIAL_MAP_METALNESS = 1, MATERIAL_MAP_NORMAL = 2 };
@@ -175,6 +187,42 @@ Material LoadMaterialDefault();
 void UnloadMaterial(Material m);
 void* MemAlloc(unsigned size);
 void MemFree(void* p);
+
+// ---- shaders (precompiled by tools/shaders.py; the game's own GLSL source strings are matched by hash) ----
+Shader LoadShaderFromMemory(const char* vsCode, const char* fsCode);   // returns id 0 if the pair was not ported
+bool IsShaderReady(Shader shader);
+int GetShaderLocation(Shader shader, const char* uniformName);          // -1 when absent
+void SetShaderValue(Shader shader, int locIndex, const void* value, int uniformType);
+void SetShaderValueV(Shader shader, int locIndex, const void* value, int uniformType, int count);
+void SetShaderValueMatrix(Shader shader, int locIndex, Matrix mat);
+void UnloadShader(Shader shader);
+void BeginShaderMode(Shader shader);   // 2D draws (rectangles, textures) and DrawMesh use it until EndShaderMode
+void EndShaderMode();
+
+// ---- images / textures ----
+Image GenImageColor(int width, int height, Color color);
+void ImageDrawRectangle(Image* dst, int x, int y, int w, int h, Color color);
+void ImageDrawCircle(Image* dst, int cx, int cy, int radius, Color color);
+void UnloadImage(Image image);
+Texture2D LoadTextureFromImage(Image image);
+void GenTextureMipmaps(Texture2D* texture);
+void SetTextureFilter(Texture2D texture, int filter);
+void SetTextureWrap(Texture2D texture, int wrap);
+void UnloadTexture(Texture2D texture);
+void DrawTexturePro(Texture2D tex, Rectangle src, Rectangle dst, Vector2 origin, float rotation, Color tint);
+
+// ---- render state (rlgl) ----
+void rlEnableDepthMask();
+void rlDisableDepthMask();
+void rlEnableDepthTest();
+void rlDisableDepthTest();
+void rlEnableBackfaceCulling();
+void rlDisableBackfaceCulling();
+void rlDrawRenderBatchActive();   // no-op: draws are batched and ordered automatically
+void BeginBlendMode(int mode);
+void EndBlendMode();
+void BeginScissorMode(int x, int y, int width, int height);
+void EndScissorMode();
 
 // ---- 2D ----
 void DrawRectangle(int x, int y, int w, int h, Color c);

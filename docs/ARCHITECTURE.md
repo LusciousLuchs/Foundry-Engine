@@ -51,8 +51,8 @@ GPU-driven indirect draws, frame arenas, bindless textures. Profile with Tracy.
 - [x] `compat/raymath.hpp`: every raymath function Gunsmith3D uses (Vector2/3, Matrix, QuaternionTransform, Unproject), verified against the game's bundled raymath.h (`-DFOUNDRY_RAYLIB_DIR=<third_party/raylib/src>`, test `raymath_diff`).
 - [x] Win32 window + input with raylib key codes (`platform/Window`). Still to do: the `IsKeyDown`/`GetMousePosition`/... free functions on top of it.
 - [x] Draw calls: BeginMode3D/EndMode3D, DrawCube/Sphere/Plane/Grid/Line3D/Triangle3D, DrawMesh + Mesh/Material + GenMesh*, 2D rect/rounded rect/line/circle/triangle, input and timing (`compat/raylib.hpp`; demo: `examples/raylib_demo.cpp`)
-- [ ] Text (DrawText, fonts), textures, DrawModel, camera helpers (UpdateCamera)
-- [ ] Shaders (LoadShader/SetShaderValue) and rlgl usage
+- [x] Text (built-in bitmap font), textures, shaders. - [ ] fonts from files, DrawModel, camera helpers (UpdateCamera)
+- [x] Shaders (LoadShaderFromMemory/SetShaderValue) and rlgl state; matrix-stack calls still missing
 - [ ] Dear ImGui backend for the RHI
 
 ## Vulkan status
@@ -71,18 +71,41 @@ GPU-driven indirect draws, frame arenas, bindless textures. Profile with Tracy.
 Shaders: edit `engine/shaders/*`, then `tools/compile_shaders.sh` (needs glslang-tools).
 
 ## Gunsmith3D coverage (measured)
-The game calls 197 distinct raylib functions. After this work the compat layer covers ~100 of
-them, ~1,800 of ~2,180 call sites. Remaining, by effort:
+The game calls 197 distinct raylib functions. The compat layer covers 129 of them: **93% of call sites (2,033 / 2,181)**.
+(Re-measure with the script in docs/PORTING.md.) Remaining, by effort:
 
 | Area | Calls | Notes |
 |---|---|---|
-| Shaders: `LoadShaderFromMemory`, `SetShaderValue(V)`, `GetShaderLocation`, `BeginShaderMode` | ~80 | Biggest item. The game's custom GLSL must be ported to Vulkan GLSL and bound through the renderer's material system. |
-| Text: `DrawText(Ex)`, `MeasureText(Ex)`, `LoadFontFromMemory` | ~21 | Needs a font atlas + textured 2D pipeline. (`TextFormat` is done.) |
-| Audio: `PlaySound`, `SetSound*`, `LoadSound*`, `InitAudioDevice`, ... | ~35 | Independent of rendering; miniaudio is the obvious backend. |
-| rlgl state: `rlEnable/DisableDepthMask/DepthTest/BackfaceCulling`, `rlViewport`, `rlMatrixMode`, `rlDrawRenderBatchActive`, ... | ~50 | Map to pipeline state and the immediate batch. |
-| Textures / images / render textures | ~35 | Texture upload + sampling, `BeginTextureMode`. |
-| Windowing: monitors, fullscreen, window state, clipboard, file drop | ~25 | Plain Win32. |
+| Audio: `PlaySound`, `SetSound*`, `LoadSound*`, `InitAudioDevice`, ... | ~45 | Independent of rendering; miniaudio is the obvious backend. |
+| `RenderTexture` + `BeginTextureMode`/`EndTextureMode` (scope picture-in-picture) | ~5 | Needs offscreen colour+depth targets; textures must keep GL's bottom-up orientation (the game flips with a negative source height). |
+| rlgl matrix stack: `rlMatrixMode`, `rlLoadIdentity`, `rlFrustum`, `rlOrtho`, `rlPush/PopMatrix`, `rlMultMatrixf`, `rlViewport` | ~20 | Custom projections (the scope). Map to the renderer's per-pass matrices. |
+| Windowing: monitors, fullscreen/borderless, window state/size/position, clipboard, file drop, cursor | ~30 | Plain Win32. |
+| Dynamic meshes: `UpdateMeshBuffer`, `GetRayCollisionMesh` | ~6 | |
+| Images/fonts from files or memory: `LoadImage`, `LoadImageFromMemory`, `ImageResize`, `LoadFontFromMemory`, `DrawTextEx`, `MeasureTextEx`, `DrawRing` | ~10 | stb_image / a real font atlas. |
 | Dear ImGui via rlImGui | UI | ImGui Vulkan backend (`imgui_impl_vulkan`) on our context. |
+
+Done: math, input, 3D/2D primitives, `Mesh`/`Material`/`DrawMesh`, **custom shaders** (all four of the game's), textures
+(`LoadTextureFromImage`, mipmaps, filter/wrap), render state (depth mask/test, culling, blend, scissor), text (built-in
+bitmap font only), picking.
+
+## Shaders
+The game's GLSL (`#version 330`, loose uniforms) is translated at **build time** by `tools/shaders.py` to Vulkan GLSL,
+compiled to SPIR-V and embedded in `engine/render/PortedShaders.inc`. At runtime the game's own
+`LoadShaderFromMemory(vs, fs)` finds the precompiled pair by hashing the two source strings: no game-code change.
+`GetShaderLocation` / `SetShaderValue(V)` / `SetShaderValueMatrix` write into a CPU copy of the shader's std140 uniform
+block, which is snapshotted per draw (so changing a uniform between two `DrawMesh` calls works like OpenGL).
+
+Adding or changing a shader:
+1. Put the GLSL in `shaders/<set>/<name>.vs.glsl` / `.fs.glsl` (no `.vs` = raylib's default vertex shader), byte-identical to the
+   string the game passes. `tools/shaders.py extract <game/src>` copies the game's current shaders; run it again when they change.
+2. `tools/shaders.py build` regenerates `PortedShaders.inc` (needs `glslangValidator`); commit the result.
+Translation rules and limits: uniforms of type float/int/vec2-4/ivec2-4/mat4 and `sampler2D texture0..N` (only `texture0`
+is bound so far); array uniforms use std140 16-byte strides; `gl_FragCoord` is flipped to GL's bottom-left origin; standard
+uniforms `mvp matModel matNormal matView matProjection colDiffuse` are filled automatically. A shader pair that was not
+precompiled fails loudly at `LoadShaderFromMemory` with instructions.
+
+Render-state semantics follow raylib: depth test is on only inside `BeginMode3D`, back-face culling and alpha blending are
+on by default, and draws execute in call order (consecutive built-in draws with the same state merge into one command).
 
 ## Editor
 See [EDITOR.md](EDITOR.md). `engine/scene` (Scene model + command interpreter, pure C++),

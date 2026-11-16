@@ -36,10 +36,42 @@ struct State {
     std::mt19937 rng{std::random_device{}()};
     std::string shot;
     int fpsFrames = 0; double fpsStamp = 0; int fps = 0;
+    int activeShader = 0;                    // BeginShaderMode
+    Matrix view = MatrixIdentity(), proj = MatrixIdentity();
+    bool in3D = false;
+    int defaultShader = 0;                   // raylib's default textured shader, created on demand
 };
 State& S() { static State s; return s; }
 
-Vertex3D V3(Vector3 p, Vector3 n, Color c) { return {p.x, p.y, p.z, n.x, n.y, n.z, c.r, c.g, c.b, c.a}; }
+Matrix transposeM(Matrix m) {
+    return {m.m0, m.m1, m.m2, m.m3, m.m4, m.m5, m.m6, m.m7, m.m8, m.m9, m.m10, m.m11, m.m12, m.m13, m.m14, m.m15};
+}
+void toFloats(Matrix m, float out[16]) { float16 f = MatrixToFloatV(m); std::memcpy(out, f.v, 64); }
+int defaultShaderId() {
+    State& s = S();
+    if (!s.defaultShader)
+        if (const render::PortedShader* p = render::findPortedShaderByName("builtin_default")) s.defaultShader = s.rend.createShader(*p);
+    return s.defaultShader;
+}
+// A screen-space quad through a custom shader (rectangles, textured quads). Positions are pixels.
+void quad2DCustom(int shader, int tex, const Vector2 p[4], const Vector2 uv[4], Color c) {
+    State& s = S();
+    render::StdUniforms u{};
+    Matrix o = MatrixOrtho(0, s.win.width(), s.win.height(), 0, 0.0, 1.0);
+    toFloats(o, u.mvp); toFloats(o, u.proj); toFloats(MatrixIdentity(), u.model); toFloats(MatrixIdentity(), u.normal); toFloats(MatrixIdentity(), u.view);
+    u.diffuse[0] = u.diffuse[1] = u.diffuse[2] = u.diffuse[3] = 1.0f;
+    Vertex3D v[6];
+    const int order[6] = {0, 1, 2, 0, 2, 3};   // TL BL BR / TL BR TR
+    for (int i = 0; i < 6; ++i) { const int k = order[i]; v[i] = {p[k].x, p[k].y, 0, uv[k].x, uv[k].y, 0, 0, 1, c.r, c.g, c.b, c.a}; }
+    s.rend.setCullBack(false);
+    s.rend.drawCustom(shader, v, 6, render::Topo::Triangles, u, tex);
+    s.rend.setCullBack(true);
+}
+void rectCustom(float x, float y, float w, float h, Color c) {
+    Vector2 p[4] = {{x, y}, {x, y + h}, {x + w, y + h}, {x + w, y}}, uv[4] = {{0, 0}, {0, 1}, {1, 1}, {1, 0}};
+    quad2DCustom(S().activeShader, 1, p, uv, c);
+}
+Vertex3D V3(Vector3 p, Vector3 n, Color c) { return {p.x, p.y, p.z, 0.0f, 0.0f, n.x, n.y, n.z, c.r, c.g, c.b, c.a}; }
 Vertex2D V2(float x, float y, Color c) { return {x, y, c.r, c.g, c.b, c.a}; }
 Vector3 faceNormal(Vector3 a, Vector3 b, Vector3 c) {
     return Vector3Normalize(Vector3CrossProduct(Vector3Subtract(b, a), Vector3Subtract(c, a)));
@@ -53,6 +85,8 @@ void InitWindow(int w, int h, const char* title) {
     if (!s.win.create(title, w, h)) { std::fprintf(stderr, "InitWindow: window creation failed\n"); std::exit(1); }
     if (!s.rend.init(s.win)) { std::fprintf(stderr, "InitWindow: Vulkan 1.3 not available\n"); std::exit(1); }
     s.ready = true;
+    {   // shader locations are raylib-style small arrays
+    }
     s.start = s.lastFrame = std::chrono::steady_clock::now();
     s.win.pollEvents();
 }
@@ -141,12 +175,13 @@ static void beginMode3D(Camera3D cam, bool overlay) {
         proj = MatrixOrtho(-right, right, -top, top, 0.01, 1000.0);
     }
     Matrix view = MatrixLookAt(cam.position, cam.target, cam.up);
+    s.view = view; s.proj = proj; s.in3D = true;
     float16 vp = MatrixToFloatV(MatrixMultiply(view, proj));
     s.rend.begin3D(vp.v, cam.position.x, cam.position.y, cam.position.z, overlay);
 }
 void BeginMode3D(Camera3D cam) { beginMode3D(cam, false); }
 void BeginMode3DOverlay(Camera3D cam) { beginMode3D(cam, true); }
-void EndMode3D() { S().rend.end3D(); }
+void EndMode3D() { S().rend.end3D(); S().in3D = false; }
 
 void DrawLine3D(Vector3 a, Vector3 b, Color c) {
     S().rend.line(V3(a, {}, c), V3(b, {}, c));
@@ -197,8 +232,8 @@ static void sphereGeom(Vector3 ctr, float r, int rings, int slices, Color col, b
                 DrawLine3D(P(a), P(d), col);
             } else {
                 auto& rd = S().rend;
-                rd.tri(V3(P(a), a, col), V3(P(b), b, col), V3(P(c), c, col));
-                rd.tri(V3(P(a), a, col), V3(P(c), c, col), V3(P(d), d, col));
+                rd.tri(V3(P(a), a, col), V3(P(c), c, col), V3(P(b), b, col));
+                rd.tri(V3(P(a), a, col), V3(P(d), d, col), V3(P(c), c, col));
             }
         }
 }
@@ -217,8 +252,34 @@ void DrawGrid(int slices, float spacing) {
     }
 }
 
+static void drawMeshCustom(const Mesh& m, const Material& mat, Matrix t) {
+    State& s = S();
+    static std::vector<Vertex3D> verts;
+    const int tris = m.indices ? m.triangleCount : m.vertexCount / 3;
+    verts.resize(size_t(tris) * 3);
+    for (int k = 0; k < tris * 3; ++k) {
+        int i = m.indices ? m.indices[k] : k;
+        Vertex3D v{};
+        v.x = m.vertices[i * 3]; v.y = m.vertices[i * 3 + 1]; v.z = m.vertices[i * 3 + 2];
+        if (m.texcoords) { v.u = m.texcoords[i * 2]; v.v = m.texcoords[i * 2 + 1]; }
+        if (m.normals) { v.nx = m.normals[i * 3]; v.ny = m.normals[i * 3 + 1]; v.nz = m.normals[i * 3 + 2]; }
+        if (m.colors) { v.r = m.colors[i * 4]; v.g = m.colors[i * 4 + 1]; v.b = m.colors[i * 4 + 2]; v.a = m.colors[i * 4 + 3]; }
+        else v.r = v.g = v.b = v.a = 255;
+        verts[size_t(k)] = v;
+    }
+    render::StdUniforms u{};
+    toFloats(t, u.model); toFloats(s.view, u.view); toFloats(s.proj, u.proj);
+    toFloats(MatrixMultiply(MatrixMultiply(t, s.view), s.proj), u.mvp);
+    toFloats(transposeM(MatrixInvert(t)), u.normal);
+    Color tint = mat.maps ? mat.maps[MATERIAL_MAP_ALBEDO].color : WHITE;
+    u.diffuse[0] = tint.r / 255.0f; u.diffuse[1] = tint.g / 255.0f; u.diffuse[2] = tint.b / 255.0f; u.diffuse[3] = tint.a / 255.0f;
+    s.rend.drawCustom(int(mat.shader.id), verts.data(), uint32_t(verts.size()), render::Topo::Triangles, u,
+                      mat.maps ? int(mat.maps[MATERIAL_MAP_ALBEDO].texture.id) : 0);
+}
+
 void DrawMesh(Mesh m, Material mat, Matrix t) {
     if (!m.vertices || m.vertexCount <= 0) return;
+    if (mat.shader.id != 0) { drawMeshCustom(m, mat, t); return; }
     Color tint = (mat.maps ? mat.maps[MATERIAL_MAP_ALBEDO].color : WHITE);
     // Normal matrix = cofactors of the upper 3x3 (inverse-transpose up to scale).
     float a = t.m0, b = t.m4, c = t.m8, d = t.m1, e = t.m5, f = t.m9, g = t.m2, h = t.m6, i = t.m10;
@@ -299,8 +360,8 @@ Mesh GenMeshSphere(float r, int rings, int slices) {
     };
     for (int i = 0; i < rings; ++i) for (int j = 0; j < slices; ++j) {
         Vector3 a = pt(i, j), bb = pt(i + 1, j), c = pt(i + 1, j + 1), d = pt(i, j + 1);
-        b.tri(Vector3Scale(a, r), Vector3Scale(bb, r), Vector3Scale(c, r), a, bb, c);
-        b.tri(Vector3Scale(a, r), Vector3Scale(c, r), Vector3Scale(d, r), a, c, d);
+        b.tri(Vector3Scale(a, r), Vector3Scale(c, r), Vector3Scale(bb, r), a, c, bb);   // counter-clockwise seen from outside
+        b.tri(Vector3Scale(a, r), Vector3Scale(d, r), Vector3Scale(c, r), a, d, c);
     }
     return b.finish();
 }
@@ -346,11 +407,13 @@ void DrawTriangle(Vector2 a, Vector2 b, Vector2 c, Color col) {
     S().rend.tri2D(V2(a.x, a.y, col), V2(b.x, b.y, col), V2(c.x, c.y, col));
 }
 void DrawRectangle(int x, int y, int w, int h, Color c) {
+    if (S().activeShader) { rectCustom(float(x), float(y), float(w), float(h), c); return; }
     auto& r = S().rend; float x0 = float(x), y0 = float(y), x1 = float(x + w), y1 = float(y + h);
     r.tri2D(V2(x0, y0, c), V2(x1, y0, c), V2(x1, y1, c));
     r.tri2D(V2(x0, y0, c), V2(x1, y1, c), V2(x0, y1, c));
 }
 void DrawRectangleV(Vector2 p, Vector2 s, Color c) {
+    if (S().activeShader) { rectCustom(p.x, p.y, s.x, s.y, c); return; }
     auto& r = S().rend;
     r.tri2D(V2(p.x, p.y, c), V2(p.x + s.x, p.y, c), V2(p.x + s.x, p.y + s.y, c));
     r.tri2D(V2(p.x, p.y, c), V2(p.x + s.x, p.y + s.y, c), V2(p.x, p.y + s.y, c));
@@ -444,6 +507,121 @@ void DrawCircleLinesV(Vector2 c, float r, Color col) {
     }
 }
 void DrawCircleLines(int cx, int cy, float r, Color c) { DrawCircleLinesV({float(cx), float(cy)}, r, c); }
+
+// ================= shaders =================
+Shader LoadShaderFromMemory(const char* vs, const char* fs) {
+    State& s = S();
+    Shader sh{0, static_cast<int*>(std::malloc(32 * sizeof(int)))};
+    for (int i = 0; i < 32; ++i) sh.locs[i] = -1;
+    const render::PortedShader* p = render::findPortedShader(vs, fs);
+    if (!p) {
+        std::fprintf(stderr, "LoadShaderFromMemory: this shader source pair is not precompiled.\n"
+                             "  Add its GLSL to shaders/<set>/<name>.{vs,fs}.glsl and run tools/shaders.py build.\n");
+        return sh;
+    }
+    sh.id = unsigned(s.rend.createShader(*p));
+    return sh;
+}
+bool IsShaderReady(Shader sh) { return sh.id != 0; }
+int GetShaderLocation(Shader sh, const char* name) { return S().rend.uniformIndex(int(sh.id), name); }
+void UnloadShader(Shader sh) { if (sh.id) S().rend.destroyShader(int(sh.id)); std::free(sh.locs); }
+
+static size_t uniformBytes(int type) {
+    switch (type) {
+        case SHADER_UNIFORM_FLOAT: case SHADER_UNIFORM_INT: return 4;
+        case SHADER_UNIFORM_VEC2: case SHADER_UNIFORM_IVEC2: return 8;
+        case SHADER_UNIFORM_VEC3: case SHADER_UNIFORM_IVEC3: return 12;
+        case SHADER_UNIFORM_VEC4: case SHADER_UNIFORM_IVEC4: return 16;
+        default: return 0;
+    }
+}
+void SetShaderValueV(Shader sh, int loc, const void* value, int type, int count) {
+    auto* info = S().rend.uniformInfo(int(sh.id), loc);
+    uint8_t* block = S().rend.shaderBlock(int(sh.id));
+    size_t elem = uniformBytes(type);
+    if (!info || !block || !elem || !value) return;
+    // std140: array elements are 16-byte strided (a single value is packed)
+    int n = std::min(count, int(info->count));
+    for (int i = 0; i < n; ++i)
+        std::memcpy(block + info->offset + (info->count > 1 ? size_t(i) * 16 : 0), static_cast<const uint8_t*>(value) + size_t(i) * elem, elem);
+}
+void SetShaderValue(Shader sh, int loc, const void* value, int type) { SetShaderValueV(sh, loc, value, type, 1); }
+void SetShaderValueMatrix(Shader sh, int loc, Matrix mat) {
+    auto* info = S().rend.uniformInfo(int(sh.id), loc);
+    uint8_t* block = S().rend.shaderBlock(int(sh.id));
+    if (info && block) toFloats(mat, reinterpret_cast<float*>(block + info->offset));
+}
+void BeginShaderMode(Shader sh) { S().activeShader = int(sh.id); }
+void EndShaderMode() { S().activeShader = 0; }
+
+// ================= images / textures =================
+Image GenImageColor(int w, int h, Color c) {
+    Image im{std::malloc(size_t(w) * size_t(h) * 4), w, h, 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8};
+    auto* p = static_cast<unsigned char*>(im.data);
+    for (int i = 0; i < w * h; ++i) { p[i * 4] = c.r; p[i * 4 + 1] = c.g; p[i * 4 + 2] = c.b; p[i * 4 + 3] = c.a; }
+    return im;
+}
+static void putPixel(Image* im, int x, int y, Color c) {
+    if (x < 0 || y < 0 || x >= im->width || y >= im->height) return;
+    auto* p = static_cast<unsigned char*>(im->data) + (size_t(y) * size_t(im->width) + size_t(x)) * 4;
+    p[0] = c.r; p[1] = c.g; p[2] = c.b; p[3] = c.a;
+}
+void ImageDrawRectangle(Image* im, int x, int y, int w, int h, Color c) {
+    if (!im || !im->data) return;
+    for (int j = y; j < y + h; ++j) for (int i = x; i < x + w; ++i) putPixel(im, i, j, c);
+}
+void ImageDrawCircle(Image* im, int cx, int cy, int r, Color c) {
+    if (!im || !im->data) return;
+    for (int j = -r; j <= r; ++j) for (int i = -r; i <= r; ++i) if (i * i + j * j <= r * r) putPixel(im, cx + i, cy + j, c);
+}
+void UnloadImage(Image im) { std::free(im.data); }
+Texture2D LoadTextureFromImage(Image im) {
+    int id = S().rend.createTexture(im.width, im.height, im.data, false);
+    return {unsigned(id), im.width, im.height, 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8};
+}
+void GenTextureMipmaps(Texture2D* t) { if (t && t->id) { S().rend.generateMipmaps(int(t->id)); t->mipmaps = 2; } }
+void SetTextureFilter(Texture2D t, int f) { if (t.id) S().rend.setTextureFilter(int(t.id), f); }
+void SetTextureWrap(Texture2D t, int w) { if (t.id) S().rend.setTextureWrap(int(t.id), w); }
+void UnloadTexture(Texture2D t) { if (t.id) S().rend.destroyTexture(int(t.id)); }
+
+void DrawTexturePro(Texture2D tex, Rectangle src, Rectangle dst, Vector2 origin, float rotation, Color tint) {
+    if (!tex.id || tex.width <= 0 || tex.height <= 0) return;
+    const float tw = float(tex.width), th = float(tex.height);
+    bool flipX = false;
+    if (src.width < 0) { flipX = true; src.width = -src.width; }
+    if (src.height < 0) src.y -= src.height;
+    Vector2 tl, tr, bl, br;
+    if (rotation == 0.0f) {
+        float x = dst.x - origin.x, y = dst.y - origin.y;
+        tl = {x, y}; tr = {x + dst.width, y}; bl = {x, y + dst.height}; br = {x + dst.width, y + dst.height};
+    } else {
+        float sr = std::sin(rotation * DEG2RAD), cr = std::cos(rotation * DEG2RAD);
+        auto at = [&](float dx, float dy) { return Vector2{dst.x + dx * cr - dy * sr, dst.y + dx * sr + dy * cr}; };
+        tl = at(-origin.x, -origin.y); tr = at(-origin.x + dst.width, -origin.y);
+        bl = at(-origin.x, -origin.y + dst.height); br = at(-origin.x + dst.width, -origin.y + dst.height);
+    }
+    float uL = flipX ? (src.x + src.width) / tw : src.x / tw, uR = flipX ? src.x / tw : (src.x + src.width) / tw;
+    float vT = src.y / th, vB = (src.y + src.height) / th;
+    Vector2 p[4] = {tl, bl, br, tr}, uv[4] = {{uL, vT}, {uL, vB}, {uR, vB}, {uR, vT}};
+    State& s = S();
+    int shader = s.activeShader ? s.activeShader : defaultShaderId();
+    quad2DCustom(shader, int(tex.id), p, uv, tint);
+}
+
+// ================= render state =================
+void rlEnableDepthMask() { S().rend.setDepthWrite(true); }
+void rlDisableDepthMask() { S().rend.setDepthWrite(false); }
+void rlEnableDepthTest() { S().rend.setDepthTest(true); }
+void rlDisableDepthTest() { S().rend.setDepthTest(false); }
+void rlEnableBackfaceCulling() { S().rend.setCullBack(true); }
+void rlDisableBackfaceCulling() { S().rend.setCullBack(false); }
+void rlDrawRenderBatchActive() {}
+void BeginBlendMode(int mode) {
+    S().rend.setBlend(mode == BLEND_ADDITIVE ? render::Blend::Additive : mode == BLEND_MULTIPLIED ? render::Blend::Multiplied : render::Blend::Alpha);
+}
+void EndBlendMode() { S().rend.setBlend(render::Blend::Alpha); }
+void BeginScissorMode(int x, int y, int w, int h) { S().rend.setScissor(true, x, y, w, h); }
+void EndScissorMode() { S().rend.setScissor(false, 0, 0, 0, 0); }
 
 // ================= lighting extensions =================
 void SetSunLight(Vector3 d, Color c, float k) { S().rend.setSun(d.x, d.y, d.z, c.r / 255.0f, c.g / 255.0f, c.b / 255.0f, k); }

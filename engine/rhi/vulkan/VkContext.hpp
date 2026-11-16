@@ -6,6 +6,7 @@
 #define VK_USE_PLATFORM_WIN32_KHR
 #include <vulkan/vulkan.h>
 #include <cstdint>
+#include <functional>
 #include <vector>
 
 namespace foundry::rhi::vk {
@@ -35,7 +36,8 @@ namespace foundry::rhi::vk {
     X(vkCmdBindVertexBuffers) X(vkCmdBindIndexBuffer) X(vkCmdDrawIndexed) X(vkCmdPushConstants) \
     X(vkCmdBindDescriptorSets) X(vkCreateDescriptorSetLayout) X(vkDestroyDescriptorSetLayout) \
     X(vkCreateDescriptorPool) X(vkDestroyDescriptorPool) X(vkAllocateDescriptorSets) \
-    X(vkUpdateDescriptorSets) X(vkCreateSampler) X(vkDestroySampler)
+    X(vkUpdateDescriptorSets) X(vkCreateSampler) X(vkDestroySampler) X(vkCmdCopyBufferToImage) X(vkCmdBlitImage) \
+    X(vkFreeCommandBuffers)
 
 struct Fns {
     PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr = nullptr;
@@ -100,7 +102,12 @@ public:
     void imageBarrier(VkCommandBuffer cmd, VkImage img, VkImageLayout from, VkImageLayout to,
                       VkPipelineStageFlags2 srcStage, VkAccessFlags2 srcAccess,
                       VkPipelineStageFlags2 dstStage, VkAccessFlags2 dstAccess,
-                      VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT);
+                      VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT, uint32_t baseMip = 0, uint32_t mips = 1);
+    // RGBA8 sampled colour image with `mips` levels (also a blit source/destination).
+    bool createColorImage(uint32_t w, uint32_t h, uint32_t mips, Image& out);
+    // Record and run a command buffer to completion (blocking). For uploads, not for per-frame work.
+    bool submitOneTime(const std::function<void(VkCommandBuffer)>& record);
+    uint32_t uboAlign() const { return uint32_t(limits_.minUniformBufferOffsetAlignment); }
 
     VkFormat colorFormat() const { return format_; }
     VkExtent2D extent() const { return extent_; }
@@ -123,6 +130,7 @@ private:
     VkQueue queue_ = nullptr;
     uint32_t queueFamily_ = 0;
     VkPhysicalDeviceMemoryProperties memProps_{};
+    VkPhysicalDeviceLimits limits_{};
     char deviceName_[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE]{};
 
     VkSwapchainKHR swapchain_ = nullptr;

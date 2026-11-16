@@ -2,8 +2,8 @@
 // World-space vertices (CPU-transformed). Accepts raylib/OpenGL-convention
 // matrices and converts clip space to Vulkan (y down, z in 0..1).
 layout(location = 0) in vec3 inPos;
-layout(location = 1) in vec3 inNormal;
-layout(location = 2) in vec4 inColor;
+layout(location = 2) in vec3 inNormal;
+layout(location = 3) in vec4 inColor;
 layout(push_constant) uniform PC { mat4 viewProj; vec4 camPos; } pc;
 layout(location = 0) out vec3 vWorld;
 layout(location = 1) out vec3 vNormal;
