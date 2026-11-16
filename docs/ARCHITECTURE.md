@@ -69,3 +69,17 @@ GPU-driven indirect draws, frame arenas, bindless textures. Profile with Tracy.
     cmake -B build-win -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-gcc-toolchain.cmake && cmake --build build-win
     VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json xvfb-run -a wine64 build-win/triangle.exe --frames 8 --screenshot out.ppm
 Shaders: edit `engine/shaders/*`, then `tools/compile_shaders.sh` (needs glslang-tools).
+
+## Gunsmith3D coverage (measured)
+The game calls 197 distinct raylib functions. After this work the compat layer covers ~100 of
+them, ~1,800 of ~2,180 call sites. Remaining, by effort:
+
+| Area | Calls | Notes |
+|---|---|---|
+| Shaders: `LoadShaderFromMemory`, `SetShaderValue(V)`, `GetShaderLocation`, `BeginShaderMode` | ~80 | Biggest item. The game's custom GLSL must be ported to Vulkan GLSL and bound through the renderer's material system. |
+| Text: `DrawText(Ex)`, `MeasureText(Ex)`, `LoadFontFromMemory` | ~21 | Needs a font atlas + textured 2D pipeline. (`TextFormat` is done.) |
+| Audio: `PlaySound`, `SetSound*`, `LoadSound*`, `InitAudioDevice`, ... | ~35 | Independent of rendering; miniaudio is the obvious backend. |
+| rlgl state: `rlEnable/DisableDepthMask/DepthTest/BackfaceCulling`, `rlViewport`, `rlMatrixMode`, `rlDrawRenderBatchActive`, ... | ~50 | Map to pipeline state and the immediate batch. |
+| Textures / images / render textures | ~35 | Texture upload + sampling, `BeginTextureMode`. |
+| Windowing: monitors, fullscreen, window state, clipboard, file drop | ~25 | Plain Win32. |
+| Dear ImGui via rlImGui | UI | ImGui Vulkan backend (`imgui_impl_vulkan`) on our context. |

@@ -89,6 +89,64 @@ void EnableCursor();
 void DisableCursor();
 int GetRandomValue(int min, int max);
 
+// ---- text formatting / colors / collision helpers ----
+const char* TextFormat(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+inline Color GetColor(unsigned hex) {
+    return {(unsigned char)(hex >> 24), (unsigned char)(hex >> 16), (unsigned char)(hex >> 8), (unsigned char)hex};
+}
+inline bool CheckCollisionPointRec(Vector2 p, Rectangle r) {
+    return p.x >= r.x && p.x < r.x + r.width && p.y >= r.y && p.y < r.y + r.height;
+}
+
+// ---- picking (pure math; same results as raylib) ----
+struct Ray { Vector3 position, direction; };
+struct RayCollision { bool hit; float distance; Vector3 point, normal; };
+
+inline Matrix GetCameraProjection(Camera3D cam, float aspect) {
+    if (cam.projection == CAMERA_PERSPECTIVE) return MatrixPerspective(cam.fovy * DEG2RAD, aspect, 0.01, 1000.0);
+    double top = cam.fovy / 2.0, right = top * aspect;
+    return MatrixOrtho(-right, right, -top, top, 0.01, 1000.0);
+}
+inline Ray GetScreenToWorldRayEx(Vector2 pos, Camera3D cam, int width, int height) {
+    float x = 2.0f * pos.x / float(width) - 1.0f, y = 1.0f - 2.0f * pos.y / float(height);
+    Matrix proj = GetCameraProjection(cam, float(width) / float(height));
+    Matrix view = MatrixLookAt(cam.position, cam.target, cam.up);
+    Vector3 nearP = Vector3Unproject({x, y, 0.0f}, proj, view), farP = Vector3Unproject({x, y, 1.0f}, proj, view);
+    Ray r{cam.position, Vector3Normalize(Vector3Subtract(farP, nearP))};
+    if (cam.projection == CAMERA_ORTHOGRAPHIC) r.position = Vector3Unproject({x, y, -1.0f}, proj, view);
+    return r;
+}
+inline Vector2 GetWorldToScreenEx(Vector3 p, Camera3D cam, int width, int height) {
+    Matrix proj = GetCameraProjection(cam, float(width) / float(height));
+    Matrix view = MatrixLookAt(cam.position, cam.target, cam.up);
+    Vector4 w = QuaternionTransform(QuaternionTransform({p.x, p.y, p.z, 1.0f}, view), proj);
+    return {(w.x / w.w + 1.0f) / 2.0f * float(width), (-w.y / w.w + 1.0f) / 2.0f * float(height)};
+}
+inline RayCollision GetRayCollisionTriangle(Ray ray, Vector3 p1, Vector3 p2, Vector3 p3) {
+    constexpr float EPS = 0.000001f;
+    RayCollision c{};
+    Vector3 e1 = Vector3Subtract(p2, p1), e2 = Vector3Subtract(p3, p1);
+    Vector3 p = Vector3CrossProduct(ray.direction, e2);
+    float a = Vector3DotProduct(e1, p);
+    if (a > -EPS && a < EPS) return c;
+    float inv = 1.0f / a;
+    Vector3 tv = Vector3Subtract(ray.position, p1);
+    float u = Vector3DotProduct(tv, p) * inv;
+    if (u < 0.0f || u > 1.0f) return c;
+    Vector3 q = Vector3CrossProduct(tv, e1);
+    float v = Vector3DotProduct(ray.direction, q) * inv;
+    if (v < 0.0f || u + v > 1.0f) return c;
+    float t = Vector3DotProduct(e2, q) * inv;
+    if (t > EPS) {
+        c.hit = true; c.distance = t;
+        c.normal = Vector3Normalize(Vector3CrossProduct(e1, e2));
+        c.point = Vector3Add(ray.position, Vector3Scale(ray.direction, t));
+    }
+    return c;
+}
+Ray GetScreenToWorldRay(Vector2 pos, Camera3D cam);        // uses the window size
+Vector2 GetWorldToScreen(Vector3 p, Camera3D cam);
+
 // ---- 3D ----
 void BeginMode3D(Camera3D camera);
 void EndMode3D();
@@ -120,6 +178,9 @@ void DrawRectangle(int x, int y, int w, int h, Color c);
 void DrawRectangleV(Vector2 pos, Vector2 size, Color c);
 void DrawRectangleRec(Rectangle r, Color c);
 void DrawRectangleRounded(Rectangle r, float roundness, int segments, Color c);
+void DrawRectangleLinesEx(Rectangle r, float thick, Color c);
+void DrawRectangleGradientV(int x, int y, int w, int h, Color top, Color bottom);
+void DrawRectangleGradientH(int x, int y, int w, int h, Color left, Color right);
 void DrawLine(int x1, int y1, int x2, int y2, Color c);
 void DrawLineV(Vector2 a, Vector2 b, Color c);
 void DrawLineEx(Vector2 a, Vector2 b, float thick, Color c);

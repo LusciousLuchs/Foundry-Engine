@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -116,6 +117,15 @@ int GetRandomValue(int lo, int hi) {
 }
 void* MemAlloc(unsigned size) { return std::calloc(1, size); }
 void MemFree(void* p) { std::free(p); }
+
+const char* TextFormat(const char* fmt, ...) {
+    static char bufs[4][1024]; static int idx = 0;
+    char* b = bufs[idx]; idx = (idx + 1) % 4;
+    va_list ap; va_start(ap, fmt); std::vsnprintf(b, 1024, fmt, ap); va_end(ap);
+    return b;
+}
+Ray GetScreenToWorldRay(Vector2 p, Camera3D cam) { return GetScreenToWorldRayEx(p, cam, GetScreenWidth(), GetScreenHeight()); }
+Vector2 GetWorldToScreen(Vector3 p, Camera3D cam) { return GetWorldToScreenEx(p, cam, GetScreenWidth(), GetScreenHeight()); }
 
 // ================= 3D =================
 void BeginMode3D(Camera3D cam) {
@@ -353,6 +363,22 @@ void DrawRectangleRounded(Rectangle rc, float roundness, int segments, Color c) 
         }
     Vector2 mid{rc.x + rc.width / 2, rc.y + rc.height / 2};
     for (size_t i = 0; i < pts.size(); ++i) DrawTriangle(mid, pts[i], pts[(i + 1) % pts.size()], c);
+}
+void DrawRectangleLinesEx(Rectangle r, float t, Color c) {
+    DrawRectangleRec({r.x, r.y, r.width, t}, c);
+    DrawRectangleRec({r.x, r.y + r.height - t, r.width, t}, c);
+    DrawRectangleRec({r.x, r.y + t, t, r.height - 2 * t}, c);
+    DrawRectangleRec({r.x + r.width - t, r.y + t, t, r.height - 2 * t}, c);
+}
+void DrawRectangleGradientV(int x, int y, int w, int h, Color top, Color bot) {
+    auto& r = S().rend; float x0 = float(x), y0 = float(y), x1 = float(x + w), y1 = float(y + h);
+    r.tri2D(V2(x0, y0, top), V2(x1, y0, top), V2(x1, y1, bot));
+    r.tri2D(V2(x0, y0, top), V2(x1, y1, bot), V2(x0, y1, bot));
+}
+void DrawRectangleGradientH(int x, int y, int w, int h, Color left, Color right) {
+    auto& r = S().rend; float x0 = float(x), y0 = float(y), x1 = float(x + w), y1 = float(y + h);
+    r.tri2D(V2(x0, y0, left), V2(x1, y0, right), V2(x1, y1, right));
+    r.tri2D(V2(x0, y0, left), V2(x1, y1, right), V2(x0, y1, left));
 }
 void DrawLineEx(Vector2 a, Vector2 b, float th, Color c) {
     Vector2 d = Vector2Subtract(b, a); float len = Vector2Length(d);
