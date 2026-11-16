@@ -198,7 +198,7 @@ bool Renderer::createPipelineLayouts() {
 // ------------------------------------------------------------------------------------- pipelines
 VkPipeline Renderer::getPipeline(const Cmd& c) {
     uint64_t key = uint64_t(c.kind) | uint64_t(c.topo) << 2 | uint64_t(c.st.blend) << 3 | uint64_t(c.st.depthTest) << 5 |
-                   uint64_t(c.st.depthWrite) << 6 | uint64_t(c.st.cullBack && c.kind == kCustom) << 7 | uint64_t(c.pass != 0) << 40 | uint64_t(uint32_t(c.shader)) << 8;
+                   uint64_t(c.st.depthWrite) << 6 | uint64_t(c.st.cullBack && c.kind == kCustom) << 7 | uint64_t(c.pass != 0) << 40 | uint64_t(c.pass == 0 && ctx_.samples() > 1) << 41 | uint64_t(uint32_t(c.shader)) << 8;
     auto it = pipes_.find(key);
     if (it != pipes_.end()) return it->second;
     VkPipeline p = buildPipeline(c);
@@ -234,7 +234,7 @@ VkPipeline Renderer::buildPipeline(const Cmd& c) {
     // skip the flip, so the same triangles look clockwise in framebuffer space.
     rs.frontFace = c.pass ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
     VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    ms.rasterizationSamples = (c.pass == 0 && ctx_.samples() > 1) ? VK_SAMPLE_COUNT_4_BIT : VK_SAMPLE_COUNT_1_BIT;   // only the window pass is multisampled
     VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
     ds.depthTestEnable = c.st.depthTest; ds.depthWriteEnable = c.st.depthWrite; ds.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
     VkPipelineColorBlendAttachmentState cba{};
@@ -487,6 +487,14 @@ bool Renderer::beginFrame(float r, float g, float b, float a) {
     cmds_.clear(); segs_.clear(); curSeg_ = -1; overlay_ = false; inFrame_ = true;
     st_ = State{};
     return true;
+}
+
+void Renderer::setMsaa(bool on) {
+    if ((ctx_.samples() > 1) == on) return;
+    ctx_.fn().vkDeviceWaitIdle(ctx_.device());
+    for (auto& kv : pipes_) if (kv.second) ctx_.fn().vkDestroyPipeline(ctx_.device(), kv.second, nullptr);
+    pipes_.clear();
+    ctx_.setSamples(on ? 4 : 1);
 }
 
 void Renderer::requestScreenshot(const std::string& path) {
@@ -893,8 +901,9 @@ void Renderer::endFrame() {
     }
 
     VkRenderingAttachmentInfo col{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-    col.imageView = frame_.view; col.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    col.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; col.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    col.imageView = frame_.msaaView ? frame_.msaaView : frame_.view; col.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    col.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; col.storeOp = frame_.msaaView ? VK_ATTACHMENT_STORE_OP_DONT_CARE : VK_ATTACHMENT_STORE_OP_STORE;
+    if (frame_.msaaView) { col.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT; col.resolveImageView = frame_.view; col.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; }
     col.clearValue.color = {{passes_[0].clear[0], passes_[0].clear[1], passes_[0].clear[2], passes_[0].clear[3]}};
     VkRenderingAttachmentInfo dep{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
     dep.imageView = frame_.depthView; dep.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;

@@ -31,3 +31,23 @@ cmake --build build-gunsmith -j
 `foundry_imgui foundry_compat` instead of raylib, and puts `port/gunsmith3d/shim/{raylib,raymath,rlgl,rlImGui}.h` on the
 include path. Shaders: run `tools/shaders.py extract <game>/src` then `build` whenever the game's GLSL changes.
 Run from a folder containing the game's `assets/` (copy it), e.g. `gunsmith3d.exe --preset blowback --frames 60 --shot out.png`.
+
+## Parity check against the original build
+The game can be built twice: against raylib (OpenGL 3.3) and against Foundry (Vulkan). Running both with the game's own
+fixed-timestep screenshot mode (`--frames 50 --shot x.png`) gives comparable images. Measured on the software renderers
+available in CI (Wine + Mesa llvmpipe for both; 1440x900), identical means every channel within 3/255:
+
+| Screen | identical | notes |
+|---|---|---|
+| main menu | 94% | |
+| test bench (firing) | 95-97% | |
+| first-person range | 96-97% | |
+| map editor | 96% | |
+| settings | 97% | |
+| career | 94-95% | customer idle animations use wall-clock time |
+| pose editor | 95-96% | |
+| tutorial | 94% | |
+
+Remaining differences are antialiasing (Foundry has 4x MSAA; the OpenGL capture under Wine/llvmpipe was not multisampled)
+and small rasterisation-rule differences. Bugs this comparison found and fixed: the first-person camera started pitched
+because a stale pointer jump was read as a mouse delta when the cursor was captured.

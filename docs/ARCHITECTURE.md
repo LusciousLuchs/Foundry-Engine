@@ -88,7 +88,7 @@ Known differences from raylib:
 - Fullscreen is a borderless window over the monitor, not an exclusive video mode.
 - `BeginTextureMode` must be called between `BeginDrawing` and `EndDrawing` (the renderer records per frame).
 - `UpdateMeshBuffer` works on dynamic, non-indexed meshes (what the game uses); static meshes are immutable.
-- Only `texture0` is bound for custom shaders; MSAA hints are ignored.
+- Only `texture0` is bound for custom shaders. `FLAG_MSAA_4X_HINT` gives 4x MSAA on the window pass (render targets are single-sampled).
 - Audio needs `-DFOUNDRY_RAYLIB_DIR=<raylib/src>` (the engine builds `raudio.c` from there); sound output itself is untested here.
 
 ## Measured performance (CPU cost of submitting a draw; GPU time not included)

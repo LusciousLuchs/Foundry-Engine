@@ -70,6 +70,7 @@ struct Frame {
     VkImageView view = nullptr;
     VkImage depthImage = nullptr;
     VkImageView depthView = nullptr;
+    VkImageView msaaView = nullptr;      // multisampled colour (resolved into `view` at the end of the pass); null without MSAA
     VkExtent2D extent{};
     uint32_t imageIndex = 0;
 };
@@ -86,6 +87,9 @@ public:
     // vsync on = FIFO; off = IMMEDIATE (or MAILBOX if that is all there is). Rebuilds the swapchain when it changes.
     bool setVsync(bool on);
     bool vsync() const { return vsync_; }
+    // Multisampling of the window pass (1 or 4; 4 is clamped to what the device supports). Rebuilds the swapchain targets.
+    bool setSamples(int n);
+    int samples() const { return int(samples_); }
 
     // Acquires an image and begins recording; the image is ready for rendering
     // (layout COLOR_ATTACHMENT_OPTIMAL). Returns false if the frame must be skipped.
@@ -147,6 +151,11 @@ private:
     std::vector<VkImage> images_;
     std::vector<VkImageView> views_;
     std::vector<VkSemaphore> renderDone_;   // per swapchain image
+    VkSampleCountFlagBits samples_ = VK_SAMPLE_COUNT_1_BIT;
+    VkSampleCountFlags supportedSamples_ = VK_SAMPLE_COUNT_1_BIT;
+    VkImage msaaImage_ = nullptr;
+    VkDeviceMemory msaaMem_ = nullptr;
+    VkImageView msaaView_ = nullptr;
     VkImage depthImage_ = nullptr;
     VkDeviceMemory depthMem_ = nullptr;
     VkImageView depthView_ = nullptr;

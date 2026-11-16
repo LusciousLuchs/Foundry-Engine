@@ -87,6 +87,7 @@ bool Context::init(void* hwnd, void* hinstance, uint32_t width, uint32_t height,
     VkPhysicalDeviceProperties props; f_.vkGetPhysicalDeviceProperties(phys_, &props);
     std::snprintf(deviceName_, sizeof deviceName_, "%s", props.deviceName);
     limits_ = props.limits;
+    supportedSamples_ = props.limits.framebufferColorSampleCounts & props.limits.framebufferDepthSampleCounts;
     f_.vkGetPhysicalDeviceMemoryProperties(phys_, &memProps_);
 
     float prio = 1.0f;
@@ -181,7 +182,7 @@ bool Context::createSwapchain(uint32_t w, uint32_t h) {
     VkImageCreateInfo di{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     di.imageType = VK_IMAGE_TYPE_2D; di.format = kDepthFormat;
     di.extent = {ext.width, ext.height, 1}; di.mipLevels = 1; di.arrayLayers = 1;
-    di.samples = VK_SAMPLE_COUNT_1_BIT; di.tiling = VK_IMAGE_TILING_OPTIMAL;
+    di.samples = samples_; di.tiling = VK_IMAGE_TILING_OPTIMAL;
     di.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
     di.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     VKCHECK(f_.vkCreateImage(dev_, &di, nullptr, &depthImage_));
@@ -196,7 +197,38 @@ bool Context::createSwapchain(uint32_t w, uint32_t h) {
     dv.image = depthImage_; dv.viewType = VK_IMAGE_VIEW_TYPE_2D; dv.format = kDepthFormat;
     dv.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
     VKCHECK(f_.vkCreateImageView(dev_, &dv, nullptr, &depthView_));
+
+    if (samples_ != VK_SAMPLE_COUNT_1_BIT) {   // multisampled colour target, resolved into the swapchain image
+        VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+        ci.imageType = VK_IMAGE_TYPE_2D; ci.format = format_; ci.extent = {ext.width, ext.height, 1};
+        ci.mipLevels = 1; ci.arrayLayers = 1; ci.samples = samples_; ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+        ci.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT;
+        ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        VKCHECK(f_.vkCreateImage(dev_, &ci, nullptr, &msaaImage_));
+        VkMemoryRequirements mr; f_.vkGetImageMemoryRequirements(dev_, msaaImage_, &mr);
+        uint32_t mti = 0;
+        if (!findMemoryType(mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT, mti) &&
+            !findMemoryType(mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, mti)) return false;
+        VkMemoryAllocateInfo ma{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        ma.allocationSize = mr.size; ma.memoryTypeIndex = mti;
+        VKCHECK(f_.vkAllocateMemory(dev_, &ma, nullptr, &msaaMem_));
+        VKCHECK(f_.vkBindImageMemory(dev_, msaaImage_, msaaMem_, 0));
+        VkImageViewCreateInfo mv{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        mv.image = msaaImage_; mv.viewType = VK_IMAGE_VIEW_TYPE_2D; mv.format = format_;
+        mv.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        VKCHECK(f_.vkCreateImageView(dev_, &mv, nullptr, &msaaView_));
+    }
     return true;
+}
+
+bool Context::setSamples(int n) {
+    VkSampleCountFlagBits want = n >= 4 ? VK_SAMPLE_COUNT_4_BIT : VK_SAMPLE_COUNT_1_BIT;
+    if (want != VK_SAMPLE_COUNT_1_BIT && !(supportedSamples_ & want)) want = VK_SAMPLE_COUNT_1_BIT;
+    if (want == samples_) return true;
+    samples_ = want;
+    if (!dev_ || !swapchain_) return true;
+    f_.vkDeviceWaitIdle(dev_);
+    return createSwapchain(extent_.width, extent_.height);
 }
 
 void Context::destroySwapchain() {
@@ -206,6 +238,9 @@ void Context::destroySwapchain() {
     if (depthView_) { f_.vkDestroyImageView(dev_, depthView_, nullptr); depthView_ = nullptr; }
     if (depthImage_) { f_.vkDestroyImage(dev_, depthImage_, nullptr); depthImage_ = nullptr; }
     if (depthMem_) { f_.vkFreeMemory(dev_, depthMem_, nullptr); depthMem_ = nullptr; }
+    if (msaaView_) { f_.vkDestroyImageView(dev_, msaaView_, nullptr); msaaView_ = nullptr; }
+    if (msaaImage_) { f_.vkDestroyImage(dev_, msaaImage_, nullptr); msaaImage_ = nullptr; }
+    if (msaaMem_) { f_.vkFreeMemory(dev_, msaaMem_, nullptr); msaaMem_ = nullptr; }
 }
 
 bool Context::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, Buffer& out) {
@@ -377,7 +412,11 @@ bool Context::beginFrame(Frame& fr) {
             VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
             VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
             VK_IMAGE_ASPECT_DEPTH_BIT);
-    fr = {cmd, images_[idx], views_[idx], depthImage_, depthView_, extent_, idx};
+    if (msaaImage_)
+        barrier(f_, cmd, msaaImage_, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, 0,
+                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+    fr = {cmd, images_[idx], views_[idx], depthImage_, depthView_, msaaView_, extent_, idx};
     return true;
 }
 

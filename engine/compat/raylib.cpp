@@ -114,6 +114,7 @@ void InitWindow(int w, int h, const char* title) {
     if (!s.rend.init(s.win)) { std::fprintf(stderr, "InitWindow: Vulkan 1.3 not available\n"); std::exit(1); }
     s.ready = true;
     s.rend.setImageWriter(writeScreenshot);
+    s.rend.setMsaa((s.configFlags & FLAG_MSAA_4X_HINT) != 0);
     s.vsync = (s.configFlags & FLAG_VSYNC_HINT) != 0 || s.configFlags == 0;   // raylib's default is vsync off, but a game that sets no flags expects a steady rate
     s.rend.setVsync(s.vsync);
     if (s.configFlags & FLAG_WINDOW_RESIZABLE) s.win.setResizable(true);
@@ -179,6 +180,7 @@ static void applyFlag(unsigned f, bool on) {
     State& s = S();
     if (!s.ready) { if (on) s.configFlags |= f; else s.configFlags &= ~f; return; }
     if (f & FLAG_VSYNC_HINT) { s.vsync = on; s.rend.setVsync(on); }
+    if (f & FLAG_MSAA_4X_HINT) s.rend.setMsaa(on);
     if (f & FLAG_WINDOW_TOPMOST) s.win.setTopmost(on);
     if (f & FLAG_WINDOW_RESIZABLE) s.win.setResizable(on);
     if (f & FLAG_WINDOW_UNDECORATED) s.win.setUndecorated(on);
@@ -193,6 +195,7 @@ bool IsWindowState(unsigned f) {
     if (f & FLAG_FULLSCREEN_MODE) return s.win.fullscreen();
     if (f & FLAG_BORDERLESS_WINDOWED_MODE) return s.win.borderless();
     if (f & FLAG_VSYNC_HINT) return s.vsync;
+    if (f & FLAG_MSAA_4X_HINT) return s.rend.msaa();
     if (f & FLAG_WINDOW_TOPMOST) return s.win.topmost();
     if (f & FLAG_WINDOW_RESIZABLE) return s.win.resizable();
     if (f & FLAG_WINDOW_UNDECORATED) return s.win.undecorated();

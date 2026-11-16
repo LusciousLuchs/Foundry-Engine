@@ -121,6 +121,8 @@ public:
     bool shadowsEnabled() const { return shadowOn_; }
 
     void setVsync(bool on) { ctx_.setVsync(on); }
+    void setMsaa(bool on);                       // 4x multisampling of the window pass (render targets stay single-sampled)
+    bool msaa() const { return ctx_.samples() > 1; }
     // Screenshot encoder (RGBA8, row 0 = top). Default writes PPM; the compat layer installs a PNG-capable one.
     using ImageWriter = std::function<bool(const std::string& path, const uint8_t* rgba, int w, int h)>;
     void setImageWriter(ImageWriter w) { writer_ = std::move(w); }
