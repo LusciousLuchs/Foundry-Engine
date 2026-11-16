@@ -22,6 +22,8 @@ static int mapKey(WPARAM vk, LPARAM lp) {
         case VK_DECIMAL: return KEY_KP_DECIMAL;   case VK_DIVIDE: return KEY_KP_DIVIDE;
         case VK_MULTIPLY: return KEY_KP_MULTIPLY; case VK_SUBTRACT: return KEY_KP_SUBTRACT;
         case VK_ADD: return KEY_KP_ADD;
+        case VK_CAPITAL: return KEY_CAPS_LOCK; case VK_SCROLL: return KEY_SCROLL_LOCK; case VK_NUMLOCK: return KEY_NUM_LOCK;
+        case VK_SNAPSHOT: return KEY_PRINT_SCREEN; case VK_PAUSE: return KEY_PAUSE;
         case VK_RETURN: return ext ? KEY_KP_ENTER : KEY_ENTER;
         default: break;
     }

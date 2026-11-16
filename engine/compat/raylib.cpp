@@ -635,6 +635,18 @@ void DrawCircleLinesV(Vector2 c, float r, Color col) {
         DrawLineEx({c.x + std::cos(a0) * r, c.y + std::sin(a0) * r}, {c.x + std::cos(a1) * r, c.y + std::sin(a1) * r}, 1.0f, col);
     }
 }
+void DrawRing(Vector2 c, float ri, float ro, float a0, float a1, int segs, Color col) {
+    if (ro <= ri) return;
+    if (a1 < a0) std::swap(a0, a1);
+    if (a1 - a0 > 360.0f) a1 = a0 + 360.0f;
+    int n = std::max(segs, 4);
+    for (int i = 0; i < n; ++i) {
+        float t0 = (a0 + (a1 - a0) * float(i) / float(n)) * DEG2RAD, t1 = (a0 + (a1 - a0) * float(i + 1) / float(n)) * DEG2RAD;
+        Vector2 p0{c.x + std::cos(t0) * ro, c.y + std::sin(t0) * ro}, p1{c.x + std::cos(t1) * ro, c.y + std::sin(t1) * ro};
+        Vector2 q0{c.x + std::cos(t0) * ri, c.y + std::sin(t0) * ri}, q1{c.x + std::cos(t1) * ri, c.y + std::sin(t1) * ri};
+        DrawTriangle(p0, q0, q1, col); DrawTriangle(p0, q1, p1, col);
+    }
+}
 void DrawCircleLines(int cx, int cy, float r, Color c) { DrawCircleLinesV({float(cx), float(cy)}, r, c); }
 
 // ================= shaders =================

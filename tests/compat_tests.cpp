@@ -5,6 +5,8 @@
 #include <cstring>
 #include <cmath>
 
+#include "compat_test_data.inc"
+#undef PlaySound   // (windows.h, pulled in by the renderer header, defines a PlaySound macro)
 using namespace foundry::compat;
 static int failures = 0;
 #define CHECK(c) do { if (!(c)) { std::printf("FAIL line %d: %s\n", __LINE__, #c); ++failures; } } while (0)
@@ -48,6 +50,53 @@ int main() {
     CHECK(px[0] == 10 && px[(1 * 4 + 1) * 4] == 200 && px[(3 * 4 + 3) * 4 + 2] == 30);
     UnloadImage(im);
     CHECK(TextFormat("%d-%s", 7, "x")[2] == 'x');
+    CHECK(std::strcmp(GetFileExtension("a/b/gun.OBJ"), ".OBJ") == 0 && GetFileExtension("noext") == nullptr);
+    CHECK(IsFileExtension("x.PNG", ".png") && IsFileExtension("x.jpg", ".png;.jpg") && !IsFileExtension("x.jpgx", ".jpg"));
+    CHECK(std::strcmp(GetFileName("C:\\dir\\sub\\f.txt"), "f.txt") == 0 && std::strcmp(GetFileNameWithoutExt("/a/b/f.tar.gz"), "f.tar") == 0);
+    {   // PNG decode (stb_image), resize, checker, DEFLATE
+        Image png = LoadImageFromMemory(".png", kPng, int(sizeof kPng));
+        CHECK(png.data && png.width == 3 && png.height == 2);
+        auto* p = static_cast<unsigned char*>(png.data);
+        CHECK(p[0] == 255 && p[1] == 0 && p[2] == 0 && p[3] == 255);                 // (0,0) red
+        CHECK(p[4 + 1] == 255);                                                       // (1,0) green
+        CHECK(p[(1 * 3 + 0) * 4 + 3] == 128 && p[(1 * 3 + 0) * 4 + 1] == 20);          // (0,1) 10,20,30,128
+        ImageResize(&png, 6, 4);
+        CHECK(png.width == 6 && png.height == 4);
+        auto* q = static_cast<unsigned char*>(png.data);
+        CHECK(q[0] == 255 && q[1] == 0);                                              // corner stays pure red
+        CHECK(q[(0 * 6 + 5) * 4 + 3] == 255);                                        // top-right stays opaque
+        UnloadImage(png);
+        CHECK(LoadImageFromMemory(".png", reinterpret_cast<const unsigned char*>(kPlain), 8).data == nullptr);                 // garbage is rejected, not decoded
+        Image chk = GenImageChecked(16, 16, 4, 4, Color{255, 0, 255, 255}, Color{0, 0, 0, 255});
+        auto* c = static_cast<unsigned char*>(chk.data);
+        CHECK(c[0] == 255 && c[(0 * 16 + 4) * 4] == 0 && c[(4 * 16 + 4) * 4] == 255); // 4px checks alternate
+        UnloadImage(chk);
+        int n = 0;
+        unsigned char* d = DecompressData(kDeflate, int(sizeof kDeflate), &n);
+        CHECK(d && n == int(sizeof kPlain) - 1 && std::memcmp(d, kPlain, size_t(n)) == 0);
+        std::free(d);
+        int bad = 0;
+        CHECK(DecompressData(kPng, 5, &bad) == nullptr || bad >= 0);                   // corrupt input must not crash
+    }
+#ifdef FOUNDRY_HAS_AUDIO
+    {   // raylib's audio module: decoding works without a device; a machine with no sound card must not crash us
+        Wave w = LoadWaveFromMemory(".wav", kWav, int(sizeof kWav));
+        CHECK(IsWaveValid(w) && w.frameCount == 100 && w.sampleRate == 8000 && w.sampleSize == 16 && w.channels == 1);
+        InitAudioDevice();
+        bool ready = IsAudioDeviceReady();
+        std::printf("audio device ready: %s\n", ready ? "yes" : "no (expected on a machine without a sound device)");
+        if (ready) {
+            Sound s = LoadSoundFromWave(w);
+            CHECK(IsSoundValid(s) && s.frameCount == 100);
+            SetSoundVolume(s, 0.5f); SetSoundPitch(s, 1.2f);
+            PlaySound(s);
+            StopSound(s);
+            UnloadSound(s);
+        }
+        UnloadWave(w);
+        CloseAudioDevice();
+    }
+#endif
     std::printf(failures ? "%d failure(s)\n" : "compat tests passed\n", failures);
     return failures;
 }

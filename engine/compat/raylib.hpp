@@ -69,6 +69,13 @@ FOUNDRY_COLOR(BLANK, 0, 0, 0, 0)            FOUNDRY_COLOR(RAYWHITE, 245, 245, 24
 using namespace foundry::platform;   // KEY_* enums
 enum { MOUSE_BUTTON_LEFT = 0, MOUSE_BUTTON_RIGHT = 1, MOUSE_BUTTON_MIDDLE = 2 };
 
+#define RAYLIB_VERSION_MAJOR 5
+#define RAYLIB_VERSION_MINOR 5
+#define RAYLIB_VERSION_PATCH 0
+#define RAYLIB_VERSION "5.5"
+enum { LOG_ALL = 0, LOG_TRACE, LOG_DEBUG, LOG_INFO, LOG_WARNING, LOG_ERROR, LOG_FATAL, LOG_NONE };
+enum { RL_OPENGL_11 = 1, RL_OPENGL_21, RL_OPENGL_33, RL_OPENGL_43, RL_OPENGL_ES_20, RL_OPENGL_ES_30 };
+
 // ---- window state ----
 enum { FLAG_FULLSCREEN_MODE = 0x2, FLAG_WINDOW_RESIZABLE = 0x4, FLAG_WINDOW_UNDECORATED = 0x8, FLAG_WINDOW_TRANSPARENT = 0x10,
        FLAG_MSAA_4X_HINT = 0x20, FLAG_VSYNC_HINT = 0x40, FLAG_WINDOW_HIDDEN = 0x80, FLAG_WINDOW_ALWAYS_RUN = 0x100,
@@ -243,6 +250,24 @@ void UnloadShader(Shader shader);
 void BeginShaderMode(Shader shader);   // 2D draws (rectangles, textures) and DrawMesh use it until EndShaderMode
 void EndShaderMode();
 
+// ---- fonts (stb_truetype; atlas is built at load time) ----
+struct GlyphInfo { int value, offsetX, offsetY, advanceX; Image image; };
+struct Font { int baseSize, glyphCount, glyphPadding; Texture2D texture; Rectangle* recs; GlyphInfo* glyphs; };
+Font LoadFontFromMemory(const char* fileType, const unsigned char* data, int dataSize, int fontSize, int* codepoints, int codepointCount);
+Font LoadFontEx(const char* fileName, int fontSize, int* codepoints, int codepointCount);
+bool IsFontReady(Font font);
+void UnloadFont(Font font);
+void DrawTextEx(Font font, const char* text, Vector2 position, float fontSize, float spacing, Color tint);
+Vector2 MeasureTextEx(Font font, const char* text, float fontSize, float spacing);
+
+// ---- files / compression ----
+Image LoadImage(const char* fileName);                                            // png jpg bmp tga (stb_image)
+Image LoadImageFromMemory(const char* fileType, const unsigned char* data, int dataSize);
+Image GenImageChecked(int width, int height, int checksX, int checksY, Color c1, Color c2);
+void ImageResize(Image* image, int newWidth, int newHeight);                      // bilinear
+void ImageFormat(Image* image, int newFormat);                                    // only R8G8B8A8 exists: a no-op
+unsigned char* DecompressData(const unsigned char* compData, int compDataSize, int* dataSize);   // DEFLATE
+
 // ---- images / textures ----
 Image GenImageColor(int width, int height, Color color);
 void ImageDrawRectangle(Image* dst, int x, int y, int w, int h, Color color);
@@ -313,6 +338,7 @@ void DrawLineV(Vector2 a, Vector2 b, Color c);
 void DrawLineEx(Vector2 a, Vector2 b, float thick, Color c);
 void DrawCircle(int cx, int cy, float radius, Color c);
 void DrawCircleV(Vector2 center, float radius, Color c);
+void DrawRing(Vector2 center, float innerRadius, float outerRadius, float startAngle, float endAngle, int segments, Color color);
 void DrawCircleLines(int cx, int cy, float radius, Color c);
 void DrawCircleLinesV(Vector2 center, float radius, Color c);
 void DrawTriangle(Vector2 a, Vector2 b, Vector2 c, Color col);
@@ -325,3 +351,12 @@ void EnableShadows(bool enabled);
 bool AddPointLight(Vector3 position, float range, Color color, float intensity);   // per frame
 
 } // namespace foundry::compat
+
+extern "C" {   // file-name helpers with C linkage (raylib's rcore; also used by raudio.c)
+const char* GetFileExtension(const char* fileName);          // includes the dot; nullptr when there is none
+bool IsFileExtension(const char* fileName, const char* ext); // case-insensitive; ext may be ".a;.b"
+const char* GetFileName(const char* filePath);
+const char* GetFileNameWithoutExt(const char* filePath);
+}
+
+#include "compat/audio.hpp"   // raylib's audio API (needs the foundry_audio library: configure with -DFOUNDRY_RAYLIB_DIR=...)
