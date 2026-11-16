@@ -50,6 +50,15 @@ int main() {
     CHECK(px[0] == 10 && px[(1 * 4 + 1) * 4] == 200 && px[(3 * 4 + 3) * 4 + 2] == 30);
     UnloadImage(im);
     CHECK(TextFormat("%d-%s", 7, "x")[2] == 'x');
+    {   // ray vs mesh: nearest hit, in world space after the transform
+        Mesh c = GenMeshCube(2, 2, 2);
+        RayCollision hit = GetRayCollisionMesh({{0, 0, 10}, {0, 0, -1}}, c, MatrixTranslate(0, 0, 0));
+        CHECK(hit.hit && std::fabs(hit.distance - 9.0f) < 1e-4f && std::fabs(hit.normal.z - 1.0f) < 1e-4f);
+        hit = GetRayCollisionMesh({{0, 0, 10}, {0, 0, -1}}, c, MatrixTranslate(0, 0, -5));
+        CHECK(hit.hit && std::fabs(hit.distance - 14.0f) < 1e-4f);
+        CHECK(!GetRayCollisionMesh({{5, 5, 10}, {0, 0, -1}}, c, MatrixIdentity()).hit);
+        UnloadMesh(c);
+    }
     CHECK(std::strcmp(GetFileExtension("a/b/gun.OBJ"), ".OBJ") == 0 && GetFileExtension("noext") == nullptr);
     CHECK(IsFileExtension("x.PNG", ".png") && IsFileExtension("x.jpg", ".png;.jpg") && !IsFileExtension("x.jpgx", ".jpg"));
     CHECK(std::strcmp(GetFileName("C:\\dir\\sub\\f.txt"), "f.txt") == 0 && std::strcmp(GetFileNameWithoutExt("/a/b/f.tar.gz"), "f.tar") == 0);

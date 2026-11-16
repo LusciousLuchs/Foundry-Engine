@@ -22,7 +22,7 @@ struct Matrix {
 struct Color { unsigned char r, g, b, a; };
 struct float16 { float v[16]; };
 
-namespace detail {
+namespace foundry_internal {
 // Matrix <-> array in declaration order is column-major (m0,m4,m8,m12 first
 // field row), so index a[c*4+r] == m_(r + c*4)... we use the raylib naming
 // directly: element m<i> lives at index (i%4)*4 + i/4 of the struct.
@@ -35,7 +35,7 @@ inline Matrix fromArr(const float a[16]) {
     return {a[0], a[4], a[8],  a[12], a[1], a[5], a[9],  a[13],
             a[2], a[6], a[10], a[14], a[3], a[7], a[11], a[15]};
 }
-} // namespace detail
+} // namespace foundry_internal
 
 // ---- Vector2 ----
 inline Vector2 Vector2Add(Vector2 a, Vector2 b) { return {a.x + b.x, a.y + b.y}; }
@@ -234,7 +234,7 @@ inline Matrix MatrixLookAt(Vector3 eye, Vector3 target, Vector3 up) {
 }
 inline float16 MatrixToFloatV(Matrix m) {
     float16 r;
-    detail::toArr(m, r.v);
+    foundry_internal::toArr(m, r.v);
     return r;
 }
 

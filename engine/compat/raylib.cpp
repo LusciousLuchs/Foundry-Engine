@@ -22,6 +22,7 @@
 #include <vector>
 
 namespace foundry::compat {
+bool writeScreenshot(const std::string& path, const uint8_t* rgba, int w, int h);   // files.cpp
 using render::Vertex2D;
 using render::Vertex3D;
 
@@ -112,6 +113,7 @@ void InitWindow(int w, int h, const char* title) {
     if (!s.win.create(title, w, h)) { std::fprintf(stderr, "InitWindow: window creation failed\n"); std::exit(1); }
     if (!s.rend.init(s.win)) { std::fprintf(stderr, "InitWindow: Vulkan 1.3 not available\n"); std::exit(1); }
     s.ready = true;
+    s.rend.setImageWriter(writeScreenshot);
     s.vsync = (s.configFlags & FLAG_VSYNC_HINT) != 0 || s.configFlags == 0;   // raylib's default is vsync off, but a game that sets no flags expects a steady rate
     s.rend.setVsync(s.vsync);
     if (s.configFlags & FLAG_WINDOW_RESIZABLE) s.win.setResizable(true);
@@ -134,7 +136,7 @@ int GetFPS() { return S().fps; }
 float GetFrameTime() { return S().frameTime; }
 double GetTime() { return std::chrono::duration<double>(std::chrono::steady_clock::now() - S().start).count(); }
 void SetExitKey(int k) { S().exitKey = k; }
-void TakeScreenshot(const char* path) { S().shot = path; }
+void TakeScreenshot(const char* path) { if (path) S().rend.requestScreenshot(path); }
 
 void ClearBackground(Color c) {
     State& s = S();
@@ -151,7 +153,6 @@ void EndDrawing() {
     State& s = S();
     if (s.inFrame) {
         s.rend.setClear(s.clear[0], s.clear[1], s.clear[2], s.clear[3]);
-        if (!s.shot.empty()) { s.rend.requestScreenshot(s.shot); s.shot.clear(); }
         s.rend.endFrame();
         s.inFrame = false;
     }
@@ -265,6 +266,20 @@ const char* TextFormat(const char* fmt, ...) {
     char* b = bufs[idx]; idx = (idx + 1) % 4;
     va_list ap; va_start(ap, fmt); std::vsnprintf(b, 1024, fmt, ap); va_end(ap);
     return b;
+}
+RayCollision GetRayCollisionMesh(Ray ray, Mesh m, Matrix t) {
+    RayCollision best{};
+    if (!m.vertices || m.vertexCount <= 0) return best;
+    const int tris = m.indices ? m.triangleCount : m.vertexCount / 3;
+    auto vtx = [&](int k) {
+        int i = m.indices ? m.indices[k] : k;
+        return Vector3Transform({m.vertices[i * 3], m.vertices[i * 3 + 1], m.vertices[i * 3 + 2]}, t);
+    };
+    for (int k = 0; k < tris; ++k) {
+        RayCollision c = GetRayCollisionTriangle(ray, vtx(k * 3), vtx(k * 3 + 1), vtx(k * 3 + 2));
+        if (c.hit && (!best.hit || c.distance < best.distance)) best = c;
+    }
+    return best;
 }
 Ray GetScreenToWorldRay(Vector2 p, Camera3D cam) { return GetScreenToWorldRayEx(p, cam, GetScreenWidth(), GetScreenHeight()); }
 Vector2 GetWorldToScreen(Vector3 p, Camera3D cam) { return GetWorldToScreenEx(p, cam, GetScreenWidth(), GetScreenHeight()); }

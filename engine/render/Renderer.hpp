@@ -13,6 +13,7 @@
 #include "platform/Window.hpp"
 #include "rhi/vulkan/VkContext.hpp"
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -120,7 +121,11 @@ public:
     bool shadowsEnabled() const { return shadowOn_; }
 
     void setVsync(bool on) { ctx_.setVsync(on); }
-    void requestScreenshot(const std::string& path) { shotPath_ = path; }
+    // Screenshot encoder (RGBA8, row 0 = top). Default writes PPM; the compat layer installs a PNG-capable one.
+    using ImageWriter = std::function<bool(const std::string& path, const uint8_t* rgba, int w, int h)>;
+    void setImageWriter(ImageWriter w) { writer_ = std::move(w); }
+    // Inside a frame: captured when the frame ends. Outside: the last presented image is read back now.
+    void requestScreenshot(const std::string& path);
     int width() const { return int(frame_.extent.width); }
     int height() const { return int(frame_.extent.height); }
     bool inFrame() const { return inFrame_; }
@@ -204,6 +209,7 @@ private:
     std::vector<Cmd> cmds_;
     std::vector<std::vector<float>> segs_;      // 20 floats each: viewProj + camPos
     std::string shotPath_;
+    ImageWriter writer_;
 
     bool shadowOn_ = true;
     float shadowC_[3] = {0, 0, 0};

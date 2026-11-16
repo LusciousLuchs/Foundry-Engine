@@ -9,7 +9,16 @@
 #include "render/Renderer.hpp"
 #include <algorithm>
 #include <cstdio>
+#include <limits>
 #include <vector>
+
+#ifndef NO_FONT_AWESOME
+#include "extras/FA6FreeSolidFontData.h"
+#include "extras/IconsFontAwesome6.h"
+#endif
+#ifndef FONT_AWESOME_ICON_SIZE
+#define FONT_AWESOME_ICON_SIZE 13
+#endif
 
 namespace foundry::compat {
 namespace {
@@ -148,7 +157,23 @@ void rlImGuiSetup(bool dark) {
     io.IniFilename = nullptr;
     if (dark) ImGui::StyleColorsDark(); else ImGui::StyleColorsLight();
     if (const render::PortedShader* p = render::findPortedShaderByName("builtin_default")) B.shader = internal::renderer().createShader(*p);
-    if (B.loadFonts) B.loadFonts();
+    if (B.loadFonts) B.loadFonts(); else io.Fonts->AddFontDefault();
+#ifndef NO_FONT_AWESOME
+    {   // Font Awesome icons merged into the last font, as rlImGui does after the app's own font callback
+        static const ImWchar icons_ranges[] = {ICON_MIN_FA, ICON_MAX_FA, 0};
+        ImFontConfig icons;
+        icons.MergeMode = true; icons.PixelSnapH = true; icons.FontDataOwnedByAtlas = false;
+        icons.GlyphMaxAdvanceX = std::numeric_limits<float>::max();
+        icons.RasterizerMultiply = 1.0f; icons.OversampleH = 2; icons.OversampleV = 1;
+        icons.GlyphRanges = icons_ranges;
+        io.Fonts->AddFontFromMemoryCompressedTTF((void*)fa_solid_900_compressed_data, fa_solid_900_compressed_size,
+                                                 float(FONT_AWESOME_ICON_SIZE), &icons, icons_ranges);
+    }
+#endif
+    io.BackendFlags |= ImGuiBackendFlags_HasSetMousePos;
+    ImGuiPlatformIO& pio = ImGui::GetPlatformIO();
+    pio.Platform_SetClipboardTextFn = [](ImGuiContext*, const char* text) { SetClipboardText(text); };
+    pio.Platform_GetClipboardTextFn = [](ImGuiContext*) -> const char* { return GetClipboardText(); };
     B.lastTime = GetTime();
 }
 

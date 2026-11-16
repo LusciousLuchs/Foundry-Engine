@@ -434,6 +434,7 @@ void Context::endFrame(const Frame& fr) {
     pi.waitSemaphoreCount = 1; pi.pWaitSemaphores = &renderDone_[fr.imageIndex];
     pi.swapchainCount = 1; pi.pSwapchains = &swapchain_; pi.pImageIndices = &fr.imageIndex;
     f_.vkQueuePresentKHR(queue_, &pi);
+    lastPresented_ = int(fr.imageIndex);
 
     if (doCapture) {
         f_.vkWaitForFences(dev_, 1, &fence_[cur_], VK_TRUE, UINT64_MAX);
@@ -448,6 +449,33 @@ void Context::endFrame(const Frame& fr) {
         capture_ = false;
     }
     cur_ = (cur_ + 1) % kFramesInFlight;
+}
+
+bool Context::captureLastPresented(std::vector<uint8_t>& rgba, uint32_t& w, uint32_t& h) {
+    if (!dev_ || lastPresented_ < 0 || size_t(lastPresented_) >= images_.size()) return false;
+    f_.vkDeviceWaitIdle(dev_);
+    const VkDeviceSize bytes = VkDeviceSize(extent_.width) * extent_.height * 4;
+    Buffer buf;
+    if (!createBuffer(bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, buf)) return false;
+    VkImage img = images_[size_t(lastPresented_)];
+    bool ok = submitOneTime([&](VkCommandBuffer cmd) {
+        barrier(f_, cmd, img, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+        VkBufferImageCopy c{};
+        c.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        c.imageExtent = {extent_.width, extent_.height, 1};
+        f_.vkCmdCopyImageToBuffer(cmd, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf.buffer, 1, &c);
+        barrier(f_, cmd, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, 0, 0);
+    });
+    if (ok) {
+        rgba.assign(static_cast<uint8_t*>(buf.mapped), static_cast<uint8_t*>(buf.mapped) + bytes);
+        if (format_ == VK_FORMAT_B8G8R8A8_UNORM || format_ == VK_FORMAT_B8G8R8A8_SRGB)
+            for (size_t i = 0; i + 3 < rgba.size(); i += 4) std::swap(rgba[i], rgba[i + 2]);
+        w = extent_.width; h = extent_.height;
+    }
+    destroyBuffer(buf);
+    return ok;
 }
 
 bool Context::takeCapture(std::vector<uint8_t>& rgba, uint32_t& w, uint32_t& h) {

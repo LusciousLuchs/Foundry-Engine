@@ -208,6 +208,7 @@ inline RayCollision GetRayCollisionTriangle(Ray ray, Vector3 p1, Vector3 p2, Vec
     }
     return c;
 }
+RayCollision GetRayCollisionMesh(Ray ray, Mesh mesh, Matrix transform);   // nearest triangle of a CPU-side mesh
 Ray GetScreenToWorldRay(Vector2 pos, Camera3D cam);        // uses the window size
 Vector2 GetWorldToScreen(Vector3 p, Camera3D cam);
 
@@ -266,7 +267,6 @@ Image LoadImageFromMemory(const char* fileType, const unsigned char* data, int d
 Image GenImageChecked(int width, int height, int checksX, int checksY, Color c1, Color c2);
 void ImageResize(Image* image, int newWidth, int newHeight);                      // bilinear
 void ImageFormat(Image* image, int newFormat);                                    // only R8G8B8A8 exists: a no-op
-unsigned char* DecompressData(const unsigned char* compData, int compDataSize, int* dataSize);   // DEFLATE
 
 // ---- images / textures ----
 Image GenImageColor(int width, int height, Color color);
@@ -357,6 +357,7 @@ const char* GetFileExtension(const char* fileName);          // includes the dot
 bool IsFileExtension(const char* fileName, const char* ext); // case-insensitive; ext may be ".a;.b"
 const char* GetFileName(const char* filePath);
 const char* GetFileNameWithoutExt(const char* filePath);
+unsigned char* DecompressData(const unsigned char* compData, int compDataSize, int* dataSize);   // DEFLATE (raylib: C linkage)
 }
 
 #include "compat/audio.hpp"   // raylib's audio API (needs the foundry_audio library: configure with -DFOUNDRY_RAYLIB_DIR=...)

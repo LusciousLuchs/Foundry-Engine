@@ -94,6 +94,8 @@ public:
 
     // Ask for the next presented frame to be copied to CPU memory (RGBA8).
     void requestCapture() { capture_ = true; }
+    // Read back the image presented by the last endFrame (what raylib's TakeScreenshot sees outside a frame).
+    bool captureLastPresented(std::vector<uint8_t>& rgba, uint32_t& w, uint32_t& h);
     bool takeCapture(std::vector<uint8_t>& rgba, uint32_t& w, uint32_t& h);
 
     int frameIndex() const { return cur_; }   // frame-in-flight slot being recorded
@@ -154,6 +156,7 @@ private:
     VkSemaphore acquire_[kFramesInFlight]{};
     VkFence fence_[kFramesInFlight]{};
     int cur_ = 0;
+    int lastPresented_ = -1;
 
     bool capture_ = false, captured_ = false;
     VkBuffer capBuf_ = nullptr; VkDeviceMemory capMem_ = nullptr;

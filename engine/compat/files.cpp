@@ -7,6 +7,7 @@
 #define NOMINMAX
 #include "compat/raylib.hpp"
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -22,6 +23,10 @@
 #define STBI_NO_STDIO
 #include "../../third_party/stb/stb_image.h"
 
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#define STBI_WRITE_NO_STDIO
+#include "../../third_party/stb/stb_image_write.h"
+
 #define SINFL_IMPLEMENTATION
 #include "../../third_party/stb/sinfl.h"
 
@@ -35,6 +40,28 @@
 #include "../../third_party/imgui/imstb_truetype.h"
 
 namespace foundry::compat {
+
+// Screenshot writer: .png (stb_image_write) or, for anything else, PPM.
+bool writeScreenshot(const std::string& path, const uint8_t* rgba, int w, int h) {
+    auto ends = [&](const char* ext) {
+        size_t n = std::strlen(ext);
+        if (path.size() < n) return false;
+        for (size_t i = 0; i < n; ++i) if (std::tolower(static_cast<unsigned char>(path[path.size() - n + i])) != ext[i]) return false;
+        return true;
+    };
+    FILE* f = std::fopen(path.c_str(), "wb");
+    if (!f) return false;
+    bool ok = true;
+    if (ends(".png")) {
+        auto cb = [](void* ctx, void* data, int size) { std::fwrite(data, 1, size_t(size), static_cast<FILE*>(ctx)); };
+        ok = stbi_write_png_to_func(cb, f, w, h, 4, rgba, w * 4) != 0;
+    } else {
+        std::fprintf(f, "P6\n%d %d\n255\n", w, h);
+        for (int i = 0; i < w * h; ++i) std::fwrite(rgba + i * 4, 1, 3, f);
+    }
+    std::fclose(f);
+    return ok;
+}
 
 // ============================================================ images
 Image LoadImageFromMemory(const char*, const unsigned char* data, int size) {
@@ -86,18 +113,6 @@ void ImageResize(Image* im, int nw, int nh) {
     im->data = dst; im->width = nw; im->height = nh;
 }
 void ImageFormat(Image*, int) {}
-
-// ============================================================ compression
-unsigned char* DecompressData(const unsigned char* comp, int compSize, int* outSize) {
-    constexpr int kMaxMB = 64;   // raylib's MAX_DECOMPRESSION_SIZE
-    auto* data = static_cast<unsigned char*>(std::calloc(size_t(kMaxMB) * 1024 * 1024, 1));
-    if (!data) { if (outSize) *outSize = 0; return nullptr; }
-    int len = sinflate(data, kMaxMB * 1024 * 1024, comp, compSize);
-    if (len <= 0) { std::free(data); if (outSize) *outSize = 0; return nullptr; }
-    if (auto* t = static_cast<unsigned char*>(std::realloc(data, size_t(len)))) data = t;
-    if (outSize) *outSize = len;
-    return data;
-}
 
 // ============================================================ fonts
 Font LoadFontFromMemory(const char*, const unsigned char* data, int, int fontSize, int* codepoints, int codepointCount) {
@@ -196,6 +211,16 @@ void DrawTextEx(Font f, const char* text, Vector2 pos, float size, float spacing
 
 // ============================================================ file-name helpers (raylib's rcore; raudio.c links to these)
 extern "C" {
+unsigned char* DecompressData(const unsigned char* comp, int compSize, int* outSize) {
+    constexpr int kMaxMB = 64;   // raylib's MAX_DECOMPRESSION_SIZE
+    auto* data = static_cast<unsigned char*>(std::calloc(size_t(kMaxMB) * 1024 * 1024, 1));
+    if (!data) { if (outSize) *outSize = 0; return nullptr; }
+    int len = sinflate(data, kMaxMB * 1024 * 1024, comp, compSize);
+    if (len <= 0) { std::free(data); if (outSize) *outSize = 0; return nullptr; }
+    if (auto* t = static_cast<unsigned char*>(std::realloc(data, size_t(len)))) data = t;
+    if (outSize) *outSize = len;
+    return data;
+}
 const char* GetFileExtension(const char* fileName) {
     if (!fileName) return nullptr;
     const char* dot = std::strrchr(fileName, '.');

@@ -489,6 +489,19 @@ bool Renderer::beginFrame(float r, float g, float b, float a) {
     return true;
 }
 
+void Renderer::requestScreenshot(const std::string& path) {
+    if (inFrame_) { shotPath_ = path; return; }
+    std::vector<uint8_t> px; uint32_t w = 0, h = 0;
+    if (!ctx_.captureLastPresented(px, w, h)) { std::fprintf(stderr, "screenshot: nothing has been presented yet\n"); return; }
+    bool ok = writer_ ? writer_(path, px.data(), int(w), int(h)) : false;
+    if (!writer_) if (FILE* o = std::fopen(path.c_str(), "wb")) {
+        std::fprintf(o, "P6\n%u %u\n255\n", w, h);
+        for (size_t i = 0; i < px.size(); i += 4) std::fwrite(&px[i], 1, 3, o);
+        std::fclose(o); ok = true;
+    }
+    if (ok) std::printf("screenshot: %s (%ux%u)\n", path.c_str(), w, h);
+}
+
 void Renderer::setClear(float r, float g, float b, float a) {
     if (passes_.empty()) return;
     Pass& p = passes_[size_t(curPass_)];
@@ -901,12 +914,14 @@ void Renderer::endFrame() {
     if (shot) {
         std::vector<uint8_t> px; uint32_t w, h;
         if (ctx_.takeCapture(px, w, h)) {
-            if (FILE* o = std::fopen(shotPath_.c_str(), "wb")) {
+            bool ok = false;
+            if (writer_) ok = writer_(shotPath_, px.data(), int(w), int(h));
+            else if (FILE* o = std::fopen(shotPath_.c_str(), "wb")) {
                 std::fprintf(o, "P6\n%u %u\n255\n", w, h);
                 for (size_t i = 0; i < px.size(); i += 4) std::fwrite(&px[i], 1, 3, o);
-                std::fclose(o);
-                std::printf("screenshot: %s (%ux%u)\n", shotPath_.c_str(), w, h);
+                std::fclose(o); ok = true;
             }
+            if (ok) std::printf("screenshot: %s (%ux%u)\n", shotPath_.c_str(), w, h);
         }
         shotPath_.clear();
     }

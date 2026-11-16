@@ -71,21 +71,25 @@ GPU-driven indirect draws, frame arenas, bindless textures. Profile with Tracy.
 Shaders: edit `engine/shaders/*`, then `tools/compile_shaders.sh` (needs glslang-tools).
 
 ## Gunsmith3D coverage (measured)
-The game calls 197 distinct raylib functions. The compat layer covers 129 of them: **93% of call sites (2,033 / 2,181)**.
-(Re-measure with the script in docs/PORTING.md.) Remaining, by effort:
+Compile probe against the game's own sources (`-fsyntax-only`, raylib replaced by the compat layer through shim headers): the
+~400 initial errors are down to the game's generated-file stubs only. The game is also built end to end out of tree; see
+docs/PORTING.md for how to repeat both.
 
-| Area | Calls | Notes |
-|---|---|---|
-| Audio: `PlaySound`, `SetSound*`, `LoadSound*`, `InitAudioDevice`, ... | ~45 | Independent of rendering; miniaudio is the obvious backend. |
-| `RenderTexture` + `BeginTextureMode`/`EndTextureMode` (scope picture-in-picture) | ~5 | Needs offscreen colour+depth targets; textures must keep GL's bottom-up orientation (the game flips with a negative source height). |
-| rlgl matrix stack: `rlMatrixMode`, `rlLoadIdentity`, `rlFrustum`, `rlOrtho`, `rlPush/PopMatrix`, `rlMultMatrixf`, `rlViewport` | ~20 | Custom projections (the scope). Map to the renderer's per-pass matrices. |
-| Windowing: monitors, fullscreen/borderless, window state/size/position, clipboard, file drop, cursor | ~30 | Plain Win32. |
-| Dynamic meshes: `UpdateMeshBuffer`, `GetRayCollisionMesh` | ~6 | |
-| Images/fonts from files or memory: `LoadImage`, `LoadImageFromMemory`, `ImageResize`, `LoadFontFromMemory`, `DrawTextEx`, `MeasureTextEx`, `DrawRing` | ~10 | stb_image / a real font atlas. |
+Implemented: math, input (incl. keypad, key queue, typed characters), timing and frame limiter, 3D/2D primitives,
+`Mesh`/`Material`/`DrawMesh`/GPU-resident meshes/`UpdateMeshBuffer`, custom shaders, textures/images (PNG/JPEG/BMP/TGA via
+stb_image, bilinear resize, generated images), fonts (stb_truetype atlas, UTF-8, `DrawTextEx`/`MeasureTextEx`) plus the built-in
+bitmap font, render textures (`BeginTextureMode`, GL-style orientation so the game's negative-height flip works), render state
+(depth mask/test, culling, blend, scissor, viewport), the rlgl matrix stack (`rlMatrixMode/LoadIdentity/Frustum/Ortho/Push/Pop/
+MultMatrixf`, `rlViewport`), picking (`GetRayCollisionTriangle/Mesh`, screen<->world), window state (fullscreen/borderless as a
+borderless window, size/position/min size, topmost, resizable, vsync via present mode, monitors, clipboard, file drop),
+`DecompressData`, and audio (raylib's own `raudio.c` compiled from the raylib source directory).
 
-Done: Dear ImGui (see below), math, input, 3D/2D primitives, `Mesh`/`Material`/`DrawMesh`, **custom shaders** (all four of the game's), textures
-(`LoadTextureFromImage`, mipmaps, filter/wrap), render state (depth mask/test, culling, blend, scissor), text (built-in
-bitmap font only), picking.
+Known differences from raylib:
+- Fullscreen is a borderless window over the monitor, not an exclusive video mode.
+- `BeginTextureMode` must be called between `BeginDrawing` and `EndDrawing` (the renderer records per frame).
+- `UpdateMeshBuffer` works on dynamic, non-indexed meshes (what the game uses); static meshes are immutable.
+- Only `texture0` is bound for custom shaders; MSAA hints are ignored.
+- Audio needs `-DFOUNDRY_RAYLIB_DIR=<raylib/src>` (the engine builds `raudio.c` from there); sound output itself is untested here.
 
 ## Measured performance (CPU cost of submitting a draw; GPU time not included)
 `examples/bench_drawmesh.cpp`, Release build, per `DrawMesh` call:

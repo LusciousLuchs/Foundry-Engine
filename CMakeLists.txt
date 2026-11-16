@@ -66,7 +66,8 @@ if(WIN32)
     # Dear ImGui (vendored, MIT) + our renderer backend with rlImGui-compatible entry points
     add_library(foundry_imgui STATIC third_party/imgui/imgui.cpp third_party/imgui/imgui_draw.cpp third_party/imgui/imgui_tables.cpp
                 third_party/imgui/imgui_widgets.cpp third_party/imgui/imgui_demo.cpp engine/ui/rlImGui.cpp)
-    target_include_directories(foundry_imgui PUBLIC third_party/imgui)
+    target_include_directories(foundry_imgui PUBLIC third_party/imgui engine/ui)
+    target_compile_definitions(foundry_imgui PUBLIC FONT_AWESOME_ICON_SIZE=13)
     target_link_libraries(foundry_imgui PUBLIC foundry_compat)
     target_compile_options(foundry_imgui PRIVATE -w)
     add_executable(imgui_demo examples/imgui_demo.cpp)
