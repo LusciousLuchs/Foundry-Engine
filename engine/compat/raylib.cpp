@@ -7,6 +7,7 @@
 #define NOGDI
 #define NOMINMAX
 #include "compat/raylib.hpp"
+#include "compat/internal.hpp"
 #include "render/Renderer.hpp"
 #include <algorithm>
 #include <chrono>
@@ -77,6 +78,11 @@ Vector3 faceNormal(Vector3 a, Vector3 b, Vector3 c) {
     return Vector3Normalize(Vector3CrossProduct(Vector3Subtract(b, a), Vector3Subtract(c, a)));
 }
 } // namespace
+
+namespace internal {
+render::Renderer& renderer() { return S().rend; }
+platform::Window& window() { return S().win; }
+} // namespace internal
 
 // ================= window / timing =================
 void InitWindow(int w, int h, const char* title) {

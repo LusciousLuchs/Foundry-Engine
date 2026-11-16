@@ -85,6 +85,8 @@ public:
     int createTexture(int w, int h, const void* rgba8, bool mipmaps);   // id > 0 (id 1 is a built-in white pixel)
     void destroyTexture(int id);
     void generateMipmaps(int id);
+    // Overwrite a rectangle of mip 0 (rows are `pitchBytes` apart in `pixels`, which points at the rectangle's first pixel).
+    void updateTexture(int id, int x, int y, int w, int h, const void* pixels, int pitchBytes);
     void setTextureFilter(int id, int filter);                  // raylib TEXTURE_FILTER_*
     void setTextureWrap(int id, int wrap);                      // raylib TEXTURE_WRAP_*
     // ---- GPU-resident meshes (vertices stay on the GPU between frames) ----

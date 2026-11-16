@@ -82,9 +82,8 @@ The game calls 197 distinct raylib functions. The compat layer covers 129 of the
 | Windowing: monitors, fullscreen/borderless, window state/size/position, clipboard, file drop, cursor | ~30 | Plain Win32. |
 | Dynamic meshes: `UpdateMeshBuffer`, `GetRayCollisionMesh` | ~6 | |
 | Images/fonts from files or memory: `LoadImage`, `LoadImageFromMemory`, `ImageResize`, `LoadFontFromMemory`, `DrawTextEx`, `MeasureTextEx`, `DrawRing` | ~10 | stb_image / a real font atlas. |
-| Dear ImGui via rlImGui | UI | ImGui Vulkan backend (`imgui_impl_vulkan`) on our context. |
 
-Done: math, input, 3D/2D primitives, `Mesh`/`Material`/`DrawMesh`, **custom shaders** (all four of the game's), textures
+Done: Dear ImGui (see below), math, input, 3D/2D primitives, `Mesh`/`Material`/`DrawMesh`, **custom shaders** (all four of the game's), textures
 (`LoadTextureFromImage`, mipmaps, filter/wrap), render state (depth mask/test, culling, blend, scissor), text (built-in
 bitmap font only), picking.
 
@@ -99,6 +98,15 @@ bitmap font only), picking.
 
 Resident meshes cost the same regardless of size (one uniform snapshot + one command); GPU time is separate and was
 only measured on a software rasteriser, so it says nothing about real GPUs.
+
+## Dear ImGui
+`engine/ui/rlImGui.{hpp,cpp}` is a Dear ImGui 1.92 backend on the renderer with the entry points the game uses from rlImGui
+(`rlImGuiSetup/Begin/End/Shutdown`, `rlImGuiSetLoadFontsCallback`, `rlImGuiImageSize`, `rlImGuiImageButtonSize`). It feeds ImGui
+mouse/keyboard/text from the compat layer (press and release inside one frame are both delivered), implements ImGui's
+texture requests (create / partial update / destroy of the font atlas, so fonts can grow at runtime), and turns draw lists into
+scissored, textured draws through raylib's default shader. Dear ImGui itself is vendored in `third_party/imgui` (MIT).
+Demo: `examples/imgui_demo.cpp` (`--demo` opens ImGui's full demo window).
+Not yet: mouse-cursor shape changes, clipboard, gamepad, multi-viewport.
 
 ## Shaders
 The game's GLSL (`#version 330`, loose uniforms) is translated at **build time** by `tools/shaders.py` to Vulkan GLSL,

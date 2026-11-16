@@ -413,6 +413,29 @@ int Renderer::createTexture(int w, int h, const void* rgba, bool mipmaps) {
     return int(textures_.size());
 }
 
+void Renderer::updateTexture(int id, int x, int y, int w, int h, const void* pixels, int pitch) {
+    if (id < 1 || size_t(id) > textures_.size() || !textures_[size_t(id - 1)].used || w < 1 || h < 1 || !pixels) return;
+    Texture& t = textures_[size_t(id - 1)];
+    if (x < 0 || y < 0 || x + w > t.w || y + h > t.h) return;
+    Buffer stage;
+    if (!ctx_.createBuffer(VkDeviceSize(w) * VkDeviceSize(h) * 4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, stage)) return;
+    for (int r = 0; r < h; ++r) std::memcpy(static_cast<uint8_t*>(stage.mapped) + size_t(r) * size_t(w) * 4, static_cast<const uint8_t*>(pixels) + size_t(r) * size_t(pitch), size_t(w) * 4);
+    const Fns& f = ctx_.fn();
+    ctx_.submitOneTime([&](VkCommandBuffer cmd) {
+        ctx_.imageBarrier(cmd, t.img.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                          VK_IMAGE_ASPECT_COLOR_BIT, 0, 1);
+        VkBufferImageCopy c{};
+        c.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        c.imageOffset = {x, y, 0}; c.imageExtent = {uint32_t(w), uint32_t(h), 1};
+        f.vkCmdCopyBufferToImage(cmd, stage.buffer, t.img.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
+        ctx_.imageBarrier(cmd, t.img.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                          VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                          VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 0, 1);
+    });
+    ctx_.destroyBuffer(stage);
+}
+
 void Renderer::destroyTexture(int id) {
     if (id <= 1 || size_t(id) > textures_.size() || !textures_[size_t(id - 1)].used) return;
     Texture& t = textures_[size_t(id - 1)];
