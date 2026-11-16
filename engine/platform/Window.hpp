@@ -38,6 +38,7 @@ public:
     void* nativeInstance() const { return hinst_; }    // HINSTANCE
     int width() const { return w_; }
     int height() const { return h_; }
+    bool resizedFlag() const { return resized_; }
     bool consumeResized() { bool r = resized_; resized_ = false; return r; }
     bool minimized() const { return w_ == 0 || h_ == 0; }
 

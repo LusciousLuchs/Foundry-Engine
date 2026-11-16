@@ -50,7 +50,8 @@ GPU-driven indirect draws, frame arenas, bindless textures. Profile with Tracy.
 ## Porting status (Gunsmith3D)
 - [x] `compat/raymath.hpp`: every raymath function Gunsmith3D uses (Vector2/3, Matrix, QuaternionTransform, Unproject), verified against the game's bundled raymath.h (`-DFOUNDRY_RAYLIB_DIR=<third_party/raylib/src>`, test `raymath_diff`).
 - [x] Win32 window + input with raylib key codes (`platform/Window`). Still to do: the `IsKeyDown`/`GetMousePosition`/... free functions on top of it.
-- [ ] Draw calls (DrawMesh, DrawSphere, DrawLine3D, DrawTriangle3D, 2D shapes, text)
+- [x] Draw calls: BeginMode3D/EndMode3D, DrawCube/Sphere/Plane/Grid/Line3D/Triangle3D, DrawMesh + Mesh/Material + GenMesh*, 2D rect/rounded rect/line/circle/triangle, input and timing (`compat/raylib.hpp`; demo: `examples/raylib_demo.cpp`)
+- [ ] Text (DrawText, fonts), textures, DrawModel, camera helpers (UpdateCamera)
 - [ ] Shaders (LoadShader/SetShaderValue) and rlgl usage
 - [ ] Dear ImGui backend for the RHI
 
@@ -58,7 +59,10 @@ GPU-driven indirect draws, frame arenas, bindless textures. Profile with Tracy.
 - [x] `rhi/vulkan/VkContext`: Vulkan 1.3 instance/device/swapchain, dynamic rendering + sync2, frame sync, resize, screenshot readback. vulkan-1.dll is loaded at runtime.
 - [x] `examples/triangle`: runs under Wine with a software Vulkan driver; pixel colours verified.
 - [ ] Map `VkContext` onto the abstract `rhi::Device` (buffers, textures, pipelines, VMA)
-- [ ] Render graph, lighting
+- [x] `render/Renderer`: batched forward renderer (depth buffer, sun + hemisphere ambient + 8 point lights, Blinn-Phong, ACES tone mapping, sRGB output, unlit lines, 2D overlay)
+- [ ] Shadows (sun cascades, point-light atlas), PBR materials, SSAO, clustered lights beyond 8
+- [ ] GPU-resident meshes (DrawMesh currently re-submits CPU vertices every frame; fine for small scenes, will not scale)
+- [ ] Render graph
 
 ### Running the triangle headless (Linux dev box)
     cmake -B build-win -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-gcc-toolchain.cmake && cmake --build build-win

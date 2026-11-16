@@ -9,14 +9,15 @@ namespace foundry::rhi::vk {
 static void barrier(const Fns& f, VkCommandBuffer cmd, VkImage img,
                     VkImageLayout from, VkImageLayout to,
                     VkPipelineStageFlags2 srcStage, VkAccessFlags2 srcAccess,
-                    VkPipelineStageFlags2 dstStage, VkAccessFlags2 dstAccess) {
+                    VkPipelineStageFlags2 dstStage, VkAccessFlags2 dstAccess,
+                    VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT) {
     VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
     b.srcStageMask = srcStage; b.srcAccessMask = srcAccess;
     b.dstStageMask = dstStage; b.dstAccessMask = dstAccess;
     b.oldLayout = from; b.newLayout = to;
     b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b.image = img;
-    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    b.subresourceRange = {aspect, 0, 1, 0, 1};
     VkDependencyInfo d{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
     d.imageMemoryBarrierCount = 1; d.pImageMemoryBarriers = &b;
     f.vkCmdPipelineBarrier2(cmd, &d);
@@ -167,6 +168,25 @@ bool Context::createSwapchain(uint32_t w, uint32_t h) {
         VkSemaphoreCreateInfo si{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
         VKCHECK(f_.vkCreateSemaphore(dev_, &si, nullptr, &renderDone_[i]));
     }
+
+    VkImageCreateInfo di{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    di.imageType = VK_IMAGE_TYPE_2D; di.format = kDepthFormat;
+    di.extent = {ext.width, ext.height, 1}; di.mipLevels = 1; di.arrayLayers = 1;
+    di.samples = VK_SAMPLE_COUNT_1_BIT; di.tiling = VK_IMAGE_TILING_OPTIMAL;
+    di.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    di.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VKCHECK(f_.vkCreateImage(dev_, &di, nullptr, &depthImage_));
+    VkMemoryRequirements req; f_.vkGetImageMemoryRequirements(dev_, depthImage_, &req);
+    uint32_t mt = 0;
+    if (!findMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, mt)) return false;
+    VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    mai.allocationSize = req.size; mai.memoryTypeIndex = mt;
+    VKCHECK(f_.vkAllocateMemory(dev_, &mai, nullptr, &depthMem_));
+    VKCHECK(f_.vkBindImageMemory(dev_, depthImage_, depthMem_, 0));
+    VkImageViewCreateInfo dv{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    dv.image = depthImage_; dv.viewType = VK_IMAGE_VIEW_TYPE_2D; dv.format = kDepthFormat;
+    dv.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+    VKCHECK(f_.vkCreateImageView(dev_, &dv, nullptr, &depthView_));
     return true;
 }
 
@@ -174,6 +194,33 @@ void Context::destroySwapchain() {
     for (auto v : views_) f_.vkDestroyImageView(dev_, v, nullptr);
     for (auto s : renderDone_) f_.vkDestroySemaphore(dev_, s, nullptr);
     views_.clear(); renderDone_.clear(); images_.clear();
+    if (depthView_) { f_.vkDestroyImageView(dev_, depthView_, nullptr); depthView_ = nullptr; }
+    if (depthImage_) { f_.vkDestroyImage(dev_, depthImage_, nullptr); depthImage_ = nullptr; }
+    if (depthMem_) { f_.vkFreeMemory(dev_, depthMem_, nullptr); depthMem_ = nullptr; }
+}
+
+bool Context::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, Buffer& out) {
+    VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bi.size = size; bi.usage = usage; bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VKCHECK(f_.vkCreateBuffer(dev_, &bi, nullptr, &out.buffer));
+    VkMemoryRequirements req; f_.vkGetBufferMemoryRequirements(dev_, out.buffer, &req);
+    uint32_t mt = 0;
+    if (!findMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, mt)) return false;
+    VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    mai.allocationSize = req.size; mai.memoryTypeIndex = mt;
+    VKCHECK(f_.vkAllocateMemory(dev_, &mai, nullptr, &out.memory));
+    VKCHECK(f_.vkBindBufferMemory(dev_, out.buffer, out.memory, 0));
+    VKCHECK(f_.vkMapMemory(dev_, out.memory, 0, size, 0, &out.mapped));
+    out.size = size;
+    return true;
+}
+
+void Context::destroyBuffer(Buffer& b) {
+    if (!dev_) return;
+    if (b.mapped) f_.vkUnmapMemory(dev_, b.memory);
+    if (b.buffer) f_.vkDestroyBuffer(dev_, b.buffer, nullptr);
+    if (b.memory) f_.vkFreeMemory(dev_, b.memory, nullptr);
+    b = {};
 }
 
 bool Context::resize(uint32_t w, uint32_t h) {
@@ -198,7 +245,12 @@ bool Context::beginFrame(Frame& fr) {
     barrier(f_, cmd, images_[idx], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, 0,
             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
-    fr = {cmd, images_[idx], views_[idx], extent_, idx};
+    barrier(f_, cmd, depthImage_, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+            VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT, 0,
+            VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+            VK_IMAGE_ASPECT_DEPTH_BIT);
+    fr = {cmd, images_[idx], views_[idx], depthImage_, depthView_, extent_, idx};
     return true;
 }
 

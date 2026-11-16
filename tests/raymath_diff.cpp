@@ -68,6 +68,7 @@ int main() {
         cmpM("invert", fc::MatrixInvert(fc::MatrixMultiply(m1, m2)), MatrixInvert(MatrixMultiply(r1, r2)));
         cmpV("transform", fc::Vector3Transform(a, m1), Vector3Transform(ra, r1));
         cmpM("persp", fc::MatrixPerspective(1.0, 1.6, 0.1, 100.0), MatrixPerspective(1.0, 1.6, 0.1, 100.0));
+        cmpM("ortho", fc::MatrixOrtho(-s, s + 1, -2, 2.5, 0.01, 1000), MatrixOrtho(-s, s + 1, -2, 2.5, 0.01, 1000));
         cmpM("lookat", fc::MatrixLookAt(a, b, {0, 1, 0}), MatrixLookAt(ra, rb, {0, 1, 0}));
 
         fc::Matrix proj = fc::MatrixPerspective(1.0, 1.6, 0.1, 100.0), view = fc::MatrixLookAt({0, 3, 8}, {0, 0, 0}, {0, 1, 0});

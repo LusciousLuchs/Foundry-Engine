@@ -30,7 +30,12 @@ namespace foundry::rhi::vk {
     X(vkCreatePipelineLayout) X(vkDestroyPipelineLayout) X(vkCreateGraphicsPipelines) \
     X(vkDestroyPipeline) X(vkCmdBindPipeline) X(vkCmdSetViewport) X(vkCmdSetScissor) X(vkCmdDraw) \
     X(vkCreateBuffer) X(vkDestroyBuffer) X(vkGetBufferMemoryRequirements) X(vkAllocateMemory) \
-    X(vkFreeMemory) X(vkBindBufferMemory) X(vkMapMemory) X(vkUnmapMemory) X(vkCmdCopyImageToBuffer)
+    X(vkFreeMemory) X(vkBindBufferMemory) X(vkMapMemory) X(vkUnmapMemory) X(vkCmdCopyImageToBuffer) \
+    X(vkCreateImage) X(vkDestroyImage) X(vkGetImageMemoryRequirements) X(vkBindImageMemory) \
+    X(vkCmdBindVertexBuffers) X(vkCmdBindIndexBuffer) X(vkCmdDrawIndexed) X(vkCmdPushConstants) \
+    X(vkCmdBindDescriptorSets) X(vkCreateDescriptorSetLayout) X(vkDestroyDescriptorSetLayout) \
+    X(vkCreateDescriptorPool) X(vkDestroyDescriptorPool) X(vkAllocateDescriptorSets) \
+    X(vkUpdateDescriptorSets)
 
 struct Fns {
     PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr = nullptr;
@@ -40,11 +45,23 @@ struct Fns {
 };
 
 constexpr int kFramesInFlight = 2;
+constexpr VkFormat kDepthFormat = VK_FORMAT_D32_SFLOAT;
+
+// Host-visible, persistently mapped buffer (fine for per-frame dynamic data;
+// static geometry should move to device-local + staging later).
+struct Buffer {
+    VkBuffer buffer = nullptr;
+    VkDeviceMemory memory = nullptr;
+    void* mapped = nullptr;
+    VkDeviceSize size = 0;
+};
 
 struct Frame {
     VkCommandBuffer cmd = nullptr;
     VkImage image = nullptr;
     VkImageView view = nullptr;
+    VkImage depthImage = nullptr;
+    VkImageView depthView = nullptr;
     VkExtent2D extent{};
     uint32_t imageIndex = 0;
 };
@@ -67,6 +84,10 @@ public:
     // Ask for the next presented frame to be copied to CPU memory (RGBA8).
     void requestCapture() { capture_ = true; }
     bool takeCapture(std::vector<uint8_t>& rgba, uint32_t& w, uint32_t& h);
+
+    int frameIndex() const { return cur_; }   // frame-in-flight slot being recorded
+    bool createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, Buffer& out);
+    void destroyBuffer(Buffer& b);
 
     VkFormat colorFormat() const { return format_; }
     VkExtent2D extent() const { return extent_; }
@@ -97,6 +118,9 @@ private:
     std::vector<VkImage> images_;
     std::vector<VkImageView> views_;
     std::vector<VkSemaphore> renderDone_;   // per swapchain image
+    VkImage depthImage_ = nullptr;
+    VkDeviceMemory depthMem_ = nullptr;
+    VkImageView depthView_ = nullptr;
 
     VkCommandPool pool_ = nullptr;
     VkCommandBuffer cmds_[kFramesInFlight]{};
