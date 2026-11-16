@@ -41,6 +41,13 @@ public:
     void setAmbient(const float sky[3], const float ground[3]);
     bool addPointLight(float x, float y, float z, float range, float r, float g, float b, float intensity);
 
+    // Sun shadows: orthographic map fitted to a sphere (center, radius) around the action.
+    void setShadows(bool enabled, float cx, float cy, float cz, float radius) {
+        shadowOn_ = enabled; shadowC_[0] = cx; shadowC_[1] = cy; shadowC_[2] = cz; shadowR_ = radius;
+    }
+    void setShadowsEnabled(bool on) { shadowOn_ = on; }
+    bool shadowsEnabled() const { return shadowOn_; }
+
     void requestScreenshot(const std::string& path) { shotPath_ = path; }
     int width() const { return int(frame_.extent.width); }
     int height() const { return int(frame_.extent.height); }
@@ -64,7 +71,14 @@ private:
     VkDescriptorPool pool_ = nullptr;
     VkPipelineLayout litLayout_ = nullptr, uiLayout_ = nullptr;
     VkPipeline triPipe_ = nullptr, linePipe_ = nullptr, uiPipe_ = nullptr;
-    VkShaderModule mods_[4]{};
+    VkShaderModule mods_[5]{};
+    rhi::vk::Image shadow_;
+    VkSampler shadowSampler_ = nullptr;
+    VkPipelineLayout shadowLayout_ = nullptr;
+    VkPipeline shadowPipe_ = nullptr;
+    bool shadowOn_ = true;
+    float shadowC_[3] = {0, 0, 0};
+    float shadowR_ = 16.0f;
 
     bool inFrame_ = false, in3D_ = false;
     float clear_[4]{};
@@ -76,6 +90,7 @@ private:
 
     struct LightsUBO {
         float sunDir[4], sunColor[4], ambSky[4], ambGround[4], counts[4];
+        float shadowVP[16], shadowParams[4];
         float pts[kMaxPointLights][8];
     } lights_{};
     int nPoint_ = 0;

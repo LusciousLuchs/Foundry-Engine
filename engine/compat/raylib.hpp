@@ -132,6 +132,8 @@ void DrawTriangle(Vector2 a, Vector2 b, Vector2 c, Color col);
 // ---- Foundry lighting extensions (no raylib equivalent) ----
 void SetSunLight(Vector3 direction, Color color, float intensity);
 void SetAmbientLight(Color sky, Color ground);
+void SetShadowBounds(Vector3 center, float radius);   // sun shadow map covers this sphere
+void EnableShadows(bool enabled);
 bool AddPointLight(Vector3 position, float range, Color color, float intensity);   // per frame
 
 } // namespace foundry::compat

@@ -215,6 +215,41 @@ bool Context::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, Buffer& 
     return true;
 }
 
+bool Context::createDepthImage(uint32_t w, uint32_t h, Image& out) {
+    VkImageCreateInfo di{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    di.imageType = VK_IMAGE_TYPE_2D; di.format = kDepthFormat; di.extent = {w, h, 1};
+    di.mipLevels = 1; di.arrayLayers = 1; di.samples = VK_SAMPLE_COUNT_1_BIT; di.tiling = VK_IMAGE_TILING_OPTIMAL;
+    di.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    di.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VKCHECK(f_.vkCreateImage(dev_, &di, nullptr, &out.image));
+    VkMemoryRequirements req; f_.vkGetImageMemoryRequirements(dev_, out.image, &req);
+    uint32_t mt = 0;
+    if (!findMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, mt)) return false;
+    VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    mai.allocationSize = req.size; mai.memoryTypeIndex = mt;
+    VKCHECK(f_.vkAllocateMemory(dev_, &mai, nullptr, &out.memory));
+    VKCHECK(f_.vkBindImageMemory(dev_, out.image, out.memory, 0));
+    VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    vi.image = out.image; vi.viewType = VK_IMAGE_VIEW_TYPE_2D; vi.format = kDepthFormat;
+    vi.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+    VKCHECK(f_.vkCreateImageView(dev_, &vi, nullptr, &out.view));
+    return true;
+}
+
+void Context::destroyImage(Image& img) {
+    if (!dev_) return;
+    if (img.view) f_.vkDestroyImageView(dev_, img.view, nullptr);
+    if (img.image) f_.vkDestroyImage(dev_, img.image, nullptr);
+    if (img.memory) f_.vkFreeMemory(dev_, img.memory, nullptr);
+    img = {};
+}
+
+void Context::imageBarrier(VkCommandBuffer cmd, VkImage img, VkImageLayout from, VkImageLayout to,
+                           VkPipelineStageFlags2 srcStage, VkAccessFlags2 srcAccess,
+                           VkPipelineStageFlags2 dstStage, VkAccessFlags2 dstAccess, VkImageAspectFlags aspect) {
+    barrier(f_, cmd, img, from, to, srcStage, srcAccess, dstStage, dstAccess, aspect);
+}
+
 void Context::destroyBuffer(Buffer& b) {
     if (!dev_) return;
     if (b.mapped) f_.vkUnmapMemory(dev_, b.memory);

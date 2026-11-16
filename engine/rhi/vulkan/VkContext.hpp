@@ -35,7 +35,7 @@ namespace foundry::rhi::vk {
     X(vkCmdBindVertexBuffers) X(vkCmdBindIndexBuffer) X(vkCmdDrawIndexed) X(vkCmdPushConstants) \
     X(vkCmdBindDescriptorSets) X(vkCreateDescriptorSetLayout) X(vkDestroyDescriptorSetLayout) \
     X(vkCreateDescriptorPool) X(vkDestroyDescriptorPool) X(vkAllocateDescriptorSets) \
-    X(vkUpdateDescriptorSets)
+    X(vkUpdateDescriptorSets) X(vkCreateSampler) X(vkDestroySampler)
 
 struct Fns {
     PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr = nullptr;
@@ -46,6 +46,12 @@ struct Fns {
 
 constexpr int kFramesInFlight = 2;
 constexpr VkFormat kDepthFormat = VK_FORMAT_D32_SFLOAT;
+
+struct Image {
+    VkImage image = nullptr;
+    VkDeviceMemory memory = nullptr;
+    VkImageView view = nullptr;
+};
 
 // Host-visible, persistently mapped buffer (fine for per-frame dynamic data;
 // static geometry should move to device-local + staging later).
@@ -88,6 +94,13 @@ public:
     int frameIndex() const { return cur_; }   // frame-in-flight slot being recorded
     bool createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, Buffer& out);
     void destroyBuffer(Buffer& b);
+    // Device-local depth image that can also be sampled (shadow maps).
+    bool createDepthImage(uint32_t w, uint32_t h, Image& out);
+    void destroyImage(Image& img);
+    void imageBarrier(VkCommandBuffer cmd, VkImage img, VkImageLayout from, VkImageLayout to,
+                      VkPipelineStageFlags2 srcStage, VkAccessFlags2 srcAccess,
+                      VkPipelineStageFlags2 dstStage, VkAccessFlags2 dstAccess,
+                      VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT);
 
     VkFormat colorFormat() const { return format_; }
     VkExtent2D extent() const { return extent_; }

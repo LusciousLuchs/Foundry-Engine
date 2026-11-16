@@ -60,7 +60,8 @@ GPU-driven indirect draws, frame arenas, bindless textures. Profile with Tracy.
 - [x] `examples/triangle`: runs under Wine with a software Vulkan driver; pixel colours verified.
 - [ ] Map `VkContext` onto the abstract `rhi::Device` (buffers, textures, pipelines, VMA)
 - [x] `render/Renderer`: batched forward renderer (depth buffer, sun + hemisphere ambient + 8 point lights, Blinn-Phong, ACES tone mapping, sRGB output, unlit lines, 2D overlay)
-- [ ] Shadows (sun cascades, point-light atlas), PBR materials, SSAO, clustered lights beyond 8
+- [x] Sun shadow map (2048², orthographic fit via `SetShadowBounds`, 3x3 hardware PCF, normal-offset bias)
+- [ ] Cascaded shadows, point-light shadows, PBR materials, SSAO, clustered lights beyond 8
 - [ ] GPU-resident meshes (DrawMesh currently re-submits CPU vertices every frame; fine for small scenes, will not scale)
 - [ ] Render graph
 

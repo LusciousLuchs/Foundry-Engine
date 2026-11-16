@@ -3,6 +3,8 @@
 #include "rhi/vulkan/shaders/lit.frag.spv.h"
 #include "rhi/vulkan/shaders/ui.vert.spv.h"
 #include "rhi/vulkan/shaders/ui.frag.spv.h"
+#include "rhi/vulkan/shaders/shadow.vert.spv.h"
+#include "compat/raymath.hpp"
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -10,6 +12,7 @@
 namespace foundry::render {
 using namespace rhi::vk;
 
+static constexpr uint32_t kShadowRes = 2048;
 static constexpr VkDeviceSize kTriBytes = 24u << 20, kLineBytes = 8u << 20, kUiBytes = 8u << 20;
 
 bool Renderer::init(platform::Window& win) {
@@ -22,13 +25,24 @@ bool Renderer::init(platform::Window& win) {
     maxLine_ = uint32_t(kLineBytes / sizeof(Vertex3D));
     maxUi_ = uint32_t(kUiBytes / sizeof(Vertex2D));
 
-    VkDescriptorSetLayoutBinding bind{0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    VkDescriptorSetLayoutBinding bind[2] = {
+        {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
     VkDescriptorSetLayoutCreateInfo dl{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    dl.bindingCount = 1; dl.pBindings = &bind;
+    dl.bindingCount = 2; dl.pBindings = bind;
     if (f.vkCreateDescriptorSetLayout(dev, &dl, nullptr, &setLayout_) != VK_SUCCESS) return false;
-    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kFramesInFlight};
+    VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kFramesInFlight},
+                                  {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kFramesInFlight}};
     VkDescriptorPoolCreateInfo dp{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    dp.maxSets = kFramesInFlight; dp.poolSizeCount = 1; dp.pPoolSizes = &ps;
+    dp.maxSets = kFramesInFlight; dp.poolSizeCount = 2; dp.pPoolSizes = ps;
+
+    if (!ctx_.createDepthImage(kShadowRes, kShadowRes, shadow_)) return false;
+    VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+    sci.magFilter = sci.minFilter = VK_FILTER_LINEAR; sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    sci.addressModeU = sci.addressModeV = sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+    sci.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+    sci.compareEnable = VK_TRUE; sci.compareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+    if (f.vkCreateSampler(dev, &sci, nullptr, &shadowSampler_) != VK_SUCCESS) return false;
     if (f.vkCreateDescriptorPool(dev, &dp, nullptr, &pool_) != VK_SUCCESS) return false;
 
     for (auto& r : res_) {
@@ -40,9 +54,11 @@ bool Renderer::init(platform::Window& win) {
         ai.descriptorPool = pool_; ai.descriptorSetCount = 1; ai.pSetLayouts = &setLayout_;
         if (f.vkAllocateDescriptorSets(dev, &ai, &r.set) != VK_SUCCESS) return false;
         VkDescriptorBufferInfo bi{r.ubo.buffer, 0, sizeof(LightsUBO)};
-        VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-        w.dstSet = r.set; w.descriptorCount = 1; w.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; w.pBufferInfo = &bi;
-        f.vkUpdateDescriptorSets(dev, 1, &w, 0, nullptr);
+        VkDescriptorImageInfo ii{shadowSampler_, shadow_.view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
+        VkWriteDescriptorSet w[2]{};
+        w[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, r.set, 0, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &bi, nullptr};
+        w[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, r.set, 1, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &ii, nullptr, nullptr};
+        f.vkUpdateDescriptorSets(dev, 2, w, 0, nullptr);
     }
     if (!createPipelines()) return false;
 
@@ -69,6 +85,7 @@ bool Renderer::createPipelines() {
     mods_[1] = mod(ctx_, lit_frag_spv, sizeof lit_frag_spv);
     mods_[2] = mod(ctx_, ui_vert_spv, sizeof ui_vert_spv);
     mods_[3] = mod(ctx_, ui_frag_spv, sizeof ui_frag_spv);
+    mods_[4] = mod(ctx_, shadow_vert_spv, sizeof shadow_vert_spv);
 
     VkPushConstantRange litPc{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 80};
     VkPipelineLayoutCreateInfo l1{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
@@ -79,8 +96,13 @@ bool Renderer::createPipelines() {
     l2.pushConstantRangeCount = 1; l2.pPushConstantRanges = &uiPc;
     if (f.vkCreatePipelineLayout(dev, &l2, nullptr, &uiLayout_) != VK_SUCCESS) return false;
 
+    VkPushConstantRange shPc{VK_SHADER_STAGE_VERTEX_BIT, 0, 64};
+    VkPipelineLayoutCreateInfo l3{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    l3.pushConstantRangeCount = 1; l3.pPushConstantRanges = &shPc;
+    if (f.vkCreatePipelineLayout(dev, &l3, nullptr, &shadowLayout_) != VK_SUCCESS) return false;
+
     auto build = [&](VkShaderModule vs, VkShaderModule fs, VkPipelineLayout layout, VkPrimitiveTopology topo,
-                     bool is3D, VkPipeline& out) {
+                     bool is3D, VkPipeline& out, bool depthOnly = false) {
         VkPipelineShaderStageCreateInfo st[2]{};
         st[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vs, "main", nullptr};
         st[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, fs, "main", nullptr};
@@ -90,13 +112,14 @@ bool Renderer::createPipelines() {
         VkVertexInputAttributeDescription at2[2] = {{0, 0, VK_FORMAT_R32G32_SFLOAT, 0}, {1, 0, VK_FORMAT_R8G8B8A8_UNORM, 8}};
         VkPipelineVertexInputStateCreateInfo vin{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
         vin.vertexBindingDescriptionCount = 1; vin.pVertexBindingDescriptions = &bd;
-        vin.vertexAttributeDescriptionCount = is3D ? 3 : 2; vin.pVertexAttributeDescriptions = is3D ? at3 : at2;
+        vin.vertexAttributeDescriptionCount = depthOnly ? 1 : is3D ? 3 : 2; vin.pVertexAttributeDescriptions = is3D ? at3 : at2;
         VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
         ia.topology = topo;
         VkPipelineViewportStateCreateInfo vp{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
         vp.viewportCount = 1; vp.scissorCount = 1;
         VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
         rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_NONE; rs.lineWidth = 1.0f;
+        if (depthOnly) { rs.depthBiasEnable = VK_TRUE; rs.depthBiasConstantFactor = 1.5f; rs.depthBiasSlopeFactor = 2.0f; }
         VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
         ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
         VkPipelineDepthStencilStateCreateInfo dsS{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
@@ -111,22 +134,23 @@ bool Renderer::createPipelines() {
             cba.alphaBlendOp = VK_BLEND_OP_ADD;
         }
         VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-        cb.attachmentCount = 1; cb.pAttachments = &cba;
+        cb.attachmentCount = depthOnly ? 0 : 1; cb.pAttachments = &cba;
         VkDynamicState dyn[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
         VkPipelineDynamicStateCreateInfo dsy{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
         dsy.dynamicStateCount = 2; dsy.pDynamicStates = dyn;
         VkFormat color = ctx_.colorFormat();
         VkPipelineRenderingCreateInfo ri{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-        ri.colorAttachmentCount = 1; ri.pColorAttachmentFormats = &color; ri.depthAttachmentFormat = kDepthFormat;
+        ri.colorAttachmentCount = depthOnly ? 0 : 1; ri.pColorAttachmentFormats = &color; ri.depthAttachmentFormat = kDepthFormat;
         VkGraphicsPipelineCreateInfo gp{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
-        gp.pNext = &ri; gp.stageCount = 2; gp.pStages = st; gp.pVertexInputState = &vin; gp.pInputAssemblyState = &ia;
+        gp.pNext = &ri; gp.stageCount = depthOnly ? 1 : 2; gp.pStages = st; gp.pVertexInputState = &vin; gp.pInputAssemblyState = &ia;
         gp.pViewportState = &vp; gp.pRasterizationState = &rs; gp.pMultisampleState = &ms; gp.pDepthStencilState = &dsS;
         gp.pColorBlendState = &cb; gp.pDynamicState = &dsy; gp.layout = layout;
         return f.vkCreateGraphicsPipelines(dev, nullptr, 1, &gp, nullptr, &out) == VK_SUCCESS;
     };
     return build(mods_[0], mods_[1], litLayout_, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, true, triPipe_) &&
            build(mods_[0], mods_[1], litLayout_, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, true, linePipe_) &&
-           build(mods_[2], mods_[3], uiLayout_, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, false, uiPipe_);
+           build(mods_[2], mods_[3], uiLayout_, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, false, uiPipe_) &&
+           build(mods_[4], nullptr, shadowLayout_, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, true, shadowPipe_, true);
 }
 
 void Renderer::shutdown() {
@@ -138,12 +162,16 @@ void Renderer::shutdown() {
     if (triPipe_) f.vkDestroyPipeline(dev, triPipe_, nullptr);
     if (linePipe_) f.vkDestroyPipeline(dev, linePipe_, nullptr);
     if (uiPipe_) f.vkDestroyPipeline(dev, uiPipe_, nullptr);
+    if (shadowPipe_) f.vkDestroyPipeline(dev, shadowPipe_, nullptr);
+    if (shadowLayout_) f.vkDestroyPipelineLayout(dev, shadowLayout_, nullptr);
+    if (shadowSampler_) f.vkDestroySampler(dev, shadowSampler_, nullptr);
+    ctx_.destroyImage(shadow_);
     if (litLayout_) f.vkDestroyPipelineLayout(dev, litLayout_, nullptr);
     if (uiLayout_) f.vkDestroyPipelineLayout(dev, uiLayout_, nullptr);
     for (auto m : mods_) if (m) f.vkDestroyShaderModule(dev, m, nullptr);
     if (pool_) f.vkDestroyDescriptorPool(dev, pool_, nullptr);
     if (setLayout_) f.vkDestroyDescriptorSetLayout(dev, setLayout_, nullptr);
-    triPipe_ = linePipe_ = uiPipe_ = nullptr; litLayout_ = uiLayout_ = nullptr; pool_ = nullptr; setLayout_ = nullptr;
+    triPipe_ = linePipe_ = uiPipe_ = shadowPipe_ = nullptr; shadowLayout_ = nullptr; shadowSampler_ = nullptr; litLayout_ = uiLayout_ = nullptr; pool_ = nullptr; setLayout_ = nullptr;
     for (auto& m : mods_) m = nullptr;
     ctx_.shutdown();
 }
@@ -223,6 +251,49 @@ void Renderer::endFrame() {
     const Fns& f = ctx_.fn();
     VkCommandBuffer cmd = frame_.cmd;
     FrameRes& R = res_[slot_];
+
+    // ---- sun shadow map ----
+    {
+        using namespace foundry::compat;
+        Vector3 d = Vector3Normalize({lights_.sunDir[0], lights_.sunDir[1], lights_.sunDir[2]});
+        Vector3 c{shadowC_[0], shadowC_[1], shadowC_[2]};
+        Vector3 up = std::fabs(d.y) > 0.98f ? Vector3{1, 0, 0} : Vector3{0, 1, 0};
+        Vector3 eye = Vector3Subtract(c, Vector3Scale(d, shadowR_ * 2.0f));
+        Matrix lvp = MatrixMultiply(MatrixLookAt(eye, c, up),
+                                    MatrixOrtho(-shadowR_, shadowR_, -shadowR_, shadowR_, 0.1, shadowR_ * 4.0));
+        float16 m = MatrixToFloatV(lvp);
+        std::memcpy(lights_.shadowVP, m.v, 64);
+        lights_.shadowParams[0] = shadowOn_ ? 1.0f : 0.0f;
+        lights_.shadowParams[1] = 1.0f / float(kShadowRes);
+        lights_.shadowParams[2] = 2.0f * shadowR_ / float(kShadowRes);
+
+        constexpr VkPipelineStageFlags2 kFrag = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+        ctx_.imageBarrier(cmd, shadow_.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                          VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0, kFrag, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                          VK_IMAGE_ASPECT_DEPTH_BIT);
+        VkRenderingAttachmentInfo sd{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+        sd.imageView = shadow_.view; sd.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+        sd.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; sd.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        sd.clearValue.depthStencil = {1.0f, 0};
+        VkRenderingInfo sri{VK_STRUCTURE_TYPE_RENDERING_INFO};
+        sri.renderArea = {{0, 0}, {kShadowRes, kShadowRes}}; sri.layerCount = 1; sri.pDepthAttachment = &sd;
+        f.vkCmdBeginRendering(cmd, &sri);
+        VkViewport svp{0, 0, float(kShadowRes), float(kShadowRes), 0, 1};
+        VkRect2D ssc{{0, 0}, {kShadowRes, kShadowRes}};
+        f.vkCmdSetViewport(cmd, 0, 1, &svp);
+        f.vkCmdSetScissor(cmd, 0, 1, &ssc);
+        if (shadowOn_ && nTri_) {
+            VkDeviceSize off = 0;
+            f.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipe_);
+            f.vkCmdPushConstants(cmd, shadowLayout_, VK_SHADER_STAGE_VERTEX_BIT, 0, 64, m.v);
+            f.vkCmdBindVertexBuffers(cmd, 0, 1, &R.tris.buffer, &off);
+            f.vkCmdDraw(cmd, nTri_, 1, 0, 0);
+        }
+        f.vkCmdEndRendering(cmd);
+        ctx_.imageBarrier(cmd, shadow_.image, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+                          VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                          VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
+    }
     std::memcpy(R.ubo.mapped, &lights_, sizeof lights_);
 
     VkRenderingAttachmentInfo col{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};

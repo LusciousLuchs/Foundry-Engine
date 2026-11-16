@@ -388,6 +388,8 @@ void SetAmbientLight(Color sky, Color gnd) {
     float s[3] = {lin(sky.r), lin(sky.g), lin(sky.b)}, g[3] = {lin(gnd.r), lin(gnd.g), lin(gnd.b)};
     S().rend.setAmbient(s, g);
 }
+void SetShadowBounds(Vector3 c, float r) { S().rend.setShadows(S().rend.shadowsEnabled(), c.x, c.y, c.z, r); }
+void EnableShadows(bool on) { S().rend.setShadowsEnabled(on); }
 bool AddPointLight(Vector3 p, float range, Color c, float k) {
     auto lin = [](unsigned char v) { return std::pow(v / 255.0f, 2.2f); };
     return S().rend.addPointLight(p.x, p.y, p.z, range, lin(c.r), lin(c.g), lin(c.b), k);

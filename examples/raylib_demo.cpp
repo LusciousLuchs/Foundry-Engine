@@ -17,6 +17,8 @@ int main(int argc, char** argv) {
 
     InitWindow(1280, 720, "Foundry - raylib-style demo");
     SetTargetFPS(60);
+    SetShadowBounds({0, 0, 0}, 14.0f);
+    SetSunLight({-0.8f, -0.7f, -0.45f}, {255, 242, 220, 255}, 2.2f);
 
     Camera3D camera{{9, 6, 9}, {0, 1, 0}, {0, 1, 0}, 50.0f, CAMERA_PERSPECTIVE};
     Mesh cyl = GenMeshCylinder(0.5f, 2.0f, 24);
