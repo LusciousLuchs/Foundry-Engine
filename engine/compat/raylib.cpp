@@ -101,6 +101,8 @@ void EndDrawing() {
 bool IsKeyDown(int k) { return S().win.isKeyDown(k); }
 bool IsKeyPressed(int k) { return S().win.isKeyPressed(k); }
 bool IsKeyReleased(int k) { return S().win.isKeyReleased(k); }
+bool IsKeyPressedRepeat(int k) { return S().win.isKeyRepeated(k); }
+int GetCharPressed() { return int(S().win.popChar()); }
 bool IsMouseButtonDown(int b) { return S().win.isMouseDown(b); }
 bool IsMouseButtonPressed(int b) { return S().win.isMousePressed(b); }
 bool IsMouseButtonReleased(int b) { return S().win.isMouseReleased(b); }
@@ -335,6 +337,9 @@ Material LoadMaterialDefault() {
 void UnloadMaterial(Material m) { std::free(m.maps); }
 
 // ================= 2D =================
+namespace {
+#include "render/FontData.inc"
+}
 void DrawTriangle(Vector2 a, Vector2 b, Vector2 c, Color col) {
     S().rend.tri2D(V2(a.x, a.y, col), V2(b.x, b.y, col), V2(c.x, c.y, col));
 }
@@ -379,6 +384,37 @@ void DrawRectangleGradientH(int x, int y, int w, int h, Color left, Color right)
     auto& r = S().rend; float x0 = float(x), y0 = float(y), x1 = float(x + w), y1 = float(y + h);
     r.tri2D(V2(x0, y0, left), V2(x1, y0, right), V2(x1, y1, right));
     r.tri2D(V2(x0, y0, left), V2(x1, y1, right), V2(x0, y1, left));
+}
+void DrawText(const char* text, int x, int y, int fontSize, Color c) {
+    if (!text) return;
+    const float sc = float(fontSize) / 12.0f;
+    auto px = [](float v) { return int(std::floor(v + 0.5f)); };
+    float cx = float(x), cy = float(y);
+    for (const char* p = text; *p; ++p) {
+        if (*p == '\n') { cx = float(x); cy += float(kFontH) * sc; continue; }
+        unsigned char ch = static_cast<unsigned char>(*p);
+        if (ch < 32 || ch > 126) ch = '?';
+        const unsigned short* rows = kFontRows[ch - 32];
+        for (int r = 0; r < kFontH; ++r) {
+            unsigned bits = rows[r];
+            for (int b = 0; b < kFontW;) {
+                if (!((bits >> (kFontW - 1 - b)) & 1)) { ++b; continue; }
+                int e = b; while (e < kFontW && ((bits >> (kFontW - 1 - e)) & 1)) ++e;
+                int x0 = px(cx + float(b) * sc), x1 = px(cx + float(e) * sc);
+                int y0 = px(cy + float(r) * sc), y1 = px(cy + float(r + 1) * sc);
+                if (x1 > x0 && y1 > y0) DrawRectangle(x0, y0, x1 - x0, y1 - y0, c);
+                b = e;
+            }
+        }
+        cx += float(kFontW) * sc;
+    }
+}
+int MeasureText(const char* text, int fontSize) {
+    if (!text) return 0;
+    int best = 0, cur = 0;
+    for (const char* p = text; *p; ++p) { if (*p == '\n') { best = std::max(best, cur); cur = 0; } else ++cur; }
+    best = std::max(best, cur);
+    return int(std::lround(float(best * kFontW) * float(fontSize) / 12.0f));
 }
 void DrawLineEx(Vector2 a, Vector2 b, float th, Color c) {
     Vector2 d = Vector2Subtract(b, a); float len = Vector2Length(d);

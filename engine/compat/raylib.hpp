@@ -77,6 +77,8 @@ void TakeScreenshot(const char* path);   // writes PPM
 bool IsKeyDown(int key);
 bool IsKeyPressed(int key);
 bool IsKeyReleased(int key);
+bool IsKeyPressedRepeat(int key);   // OS auto-repeat only (raylib semantics)
+int GetCharPressed();               // next typed character, 0 when the queue is empty
 bool IsMouseButtonDown(int b);
 bool IsMouseButtonPressed(int b);
 bool IsMouseButtonReleased(int b);
@@ -181,6 +183,9 @@ void DrawRectangleRounded(Rectangle r, float roundness, int segments, Color c);
 void DrawRectangleLinesEx(Rectangle r, float thick, Color c);
 void DrawRectangleGradientV(int x, int y, int w, int h, Color top, Color bottom);
 void DrawRectangleGradientH(int x, int y, int w, int h, Color left, Color right);
+// Built-in monospace bitmap font (DejaVu Sans Mono derived). fontSize 12 draws 1:1 (7x15 px cells).
+void DrawText(const char* text, int x, int y, int fontSize, Color c);
+int MeasureText(const char* text, int fontSize);
 void DrawLine(int x1, int y1, int x2, int y2, Color c);
 void DrawLineV(Vector2 a, Vector2 b, Color c);
 void DrawLineEx(Vector2 a, Vector2 b, float thick, Color c);

@@ -60,7 +60,11 @@ long Window::handleMessage(unsigned msg, uintptr_t wp, intptr_t lp, bool& handle
             std::memset(down_, 0, sizeof down_); std::memset(mdown_, 0, sizeof mdown_); return 0;
         case WM_KEYDOWN: case WM_SYSKEYDOWN: {
             int k = mapKey(wp, lp);
-            if (k) { if (!down_[k]) pressed_[k] = true; down_[k] = true; }
+            if (k) {
+                if (lp & 0x40000000) repeated_[k] = true;        // bit 30: key was already down
+                else if (!down_[k]) pressed_[k] = true;
+                down_[k] = true;
+            }
             if (msg == WM_SYSKEYDOWN) handled = (wp == VK_MENU || wp == VK_F10); // keep Alt+F4, Alt+Space
             return 0;
         }
@@ -69,6 +73,9 @@ long Window::handleMessage(unsigned msg, uintptr_t wp, intptr_t lp, bool& handle
             if (k) { down_[k] = false; released_[k] = true; }
             return 0;
         }
+        case WM_CHAR:
+            if (wp >= 32 && wp != 127 && ((charHead_ + 1) & 63) != charTail_) { chars_[charHead_] = unsigned(wp); charHead_ = (charHead_ + 1) & 63; }
+            return 0;
         case WM_LBUTTONDOWN: case WM_RBUTTONDOWN: case WM_MBUTTONDOWN: {
             int b = msg == WM_LBUTTONDOWN ? 0 : msg == WM_RBUTTONDOWN ? 1 : 2;
             if (!mdown_[b]) mpressed_[b] = true;
@@ -119,6 +126,7 @@ void Window::destroy() {
 void Window::pollEvents() {
     std::memset(pressed_, 0, sizeof pressed_);
     std::memset(released_, 0, sizeof released_);
+    std::memset(repeated_, 0, sizeof repeated_);
     std::memset(mpressed_, 0, sizeof mpressed_);
     std::memset(mreleased_, 0, sizeof mreleased_);
     wheel_ = 0;
@@ -138,6 +146,12 @@ void Window::pollEvents() {
         dx_ = mx_ - lastMx_; dy_ = my_ - lastMy_;
     }
     lastMx_ = mx_; lastMy_ = my_;
+}
+
+unsigned Window::popChar() {
+    if (charTail_ == charHead_) return 0;
+    unsigned c = chars_[charTail_]; charTail_ = (charTail_ + 1) & 63;
+    return c;
 }
 
 void Window::enableCursor() {

@@ -45,6 +45,8 @@ public:
     bool isKeyDown(int k) const { return valid(k) && down_[k]; }
     bool isKeyPressed(int k) const { return valid(k) && pressed_[k]; }
     bool isKeyReleased(int k) const { return valid(k) && released_[k]; }
+    bool isKeyRepeated(int k) const { return valid(k) && repeated_[k]; }   // OS auto-repeat events only
+    unsigned popChar();   // next typed character (unicode code point) or 0
     bool isMouseDown(int b) const { return b >= 0 && b < 8 && mdown_[b]; }
     bool isMousePressed(int b) const { return b >= 0 && b < 8 && mpressed_[b]; }
     bool isMouseReleased(int b) const { return b >= 0 && b < 8 && mreleased_[b]; }
@@ -66,7 +68,8 @@ private:
     void* hinst_ = nullptr;
     bool close_ = false, resized_ = false, cursorEnabled_ = true;
     int w_ = 0, h_ = 0;
-    bool down_[512]{}, pressed_[512]{}, released_[512]{};
+    bool down_[512]{}, pressed_[512]{}, released_[512]{}, repeated_[512]{};
+    unsigned chars_[64]{}; int charHead_ = 0, charTail_ = 0;
     bool mdown_[8]{}, mpressed_[8]{}, mreleased_[8]{};
     float mx_ = 0, my_ = 0, dx_ = 0, dy_ = 0, wheel_ = 0;
     float lastMx_ = 0, lastMy_ = 0;

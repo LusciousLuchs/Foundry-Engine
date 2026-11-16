@@ -83,3 +83,7 @@ them, ~1,800 of ~2,180 call sites. Remaining, by effort:
 | Textures / images / render textures | ~35 | Texture upload + sampling, `BeginTextureMode`. |
 | Windowing: monitors, fullscreen, window state, clipboard, file drop | ~25 | Plain Win32. |
 | Dear ImGui via rlImGui | UI | ImGui Vulkan backend (`imgui_impl_vulkan`) on our context. |
+
+## Editor
+See [EDITOR.md](EDITOR.md). `engine/scene` (Scene model + command interpreter, pure C++),
+`engine/scene/SceneRender` (draws a Scene through the compat API), `editor/` (GUI), `tools/fscene.cpp` (CLI).

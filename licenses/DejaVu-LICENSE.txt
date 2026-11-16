@@ -1,0 +1,6 @@
+The embedded bitmap font (engine/render/FontData.inc) is derived from DejaVu Sans Mono.
+Fonts are (c) Bitstream (Bitstream Vera Fonts), (c) Tavmjong Bah (Arev Fonts), and DejaVu changes are
+in the public domain. The Bitstream Vera licence permits use, copying, modification and
+distribution of the font software, including embedding and derived works, provided the copyright
+notice and this permission notice are kept and the fonts are not sold by themselves.
+Full text: https://dejavu-fonts.github.io/License.html

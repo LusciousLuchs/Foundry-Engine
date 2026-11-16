@@ -8,3 +8,5 @@ incrementally.
     cmake -B build && cmake --build build && ctest --test-dir build
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and roadmap.
+
+See [docs/EDITOR.md](docs/EDITOR.md) for the scene editor (GUI + command-line, both edit the same text scene files).
