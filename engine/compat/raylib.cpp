@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <random>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -37,6 +38,18 @@ struct State {
     std::mt19937 rng{std::random_device{}()};
     std::string shot;
     int fpsFrames = 0; double fpsStamp = 0; int fps = 0;
+    unsigned configFlags = 0;               // FLAG_* the program asked for
+    bool vsync = true;
+    std::string clip, monName;
+    TraceLogCallback traceCb = nullptr;
+    // rlgl-style matrix state (valid inside BeginMode3D)
+    Matrix transform = MatrixIdentity();     // model transform applied to draws (rlPushMatrix + rlMultMatrixf)
+    bool xformActive = false;
+    std::vector<Matrix> stack;
+    int rlMode = 0x1700;
+    Vector3 camPos{0, 0, 0};
+    bool overlay3D = false;
+    int rtId = 0;                            // BeginTextureMode target (renderer id), 0 = window
     int activeShader = 0;                    // BeginShaderMode
     Matrix view = MatrixIdentity(), proj = MatrixIdentity();
     bool in3D = false;
@@ -58,7 +71,7 @@ int defaultShaderId() {
 void quad2DCustom(int shader, int tex, const Vector2 p[4], const Vector2 uv[4], Color c) {
     State& s = S();
     render::StdUniforms u{};
-    Matrix o = MatrixOrtho(0, s.win.width(), s.win.height(), 0, 0.0, 1.0);
+    Matrix o = MatrixOrtho(0, s.rend.targetWidth(), s.rend.targetHeight(), 0, 0.0, 1.0);
     toFloats(o, u.mvp); toFloats(o, u.proj); toFloats(MatrixIdentity(), u.model); toFloats(MatrixIdentity(), u.normal); toFloats(MatrixIdentity(), u.view);
     u.diffuse[0] = u.diffuse[1] = u.diffuse[2] = u.diffuse[3] = 1.0f;
     Vertex3D v[6];
@@ -72,7 +85,15 @@ void rectCustom(float x, float y, float w, float h, Color c) {
     Vector2 p[4] = {{x, y}, {x, y + h}, {x + w, y + h}, {x + w, y}}, uv[4] = {{0, 0}, {0, 1}, {1, 1}, {1, 0}};
     quad2DCustom(S().activeShader, 1, p, uv, c);
 }
-Vertex3D V3(Vector3 p, Vector3 n, Color c) { return {p.x, p.y, p.z, 0.0f, 0.0f, n.x, n.y, n.z, c.r, c.g, c.b, c.a}; }
+Vertex3D V3(Vector3 p, Vector3 n, Color c) {
+    const State& s = S();
+    if (s.xformActive) {   // rlMultMatrixf: points move, normals only rotate
+        const Matrix& m = s.transform;
+        p = Vector3Transform(p, m);
+        n = Vector3Normalize({m.m0 * n.x + m.m4 * n.y + m.m8 * n.z, m.m1 * n.x + m.m5 * n.y + m.m9 * n.z, m.m2 * n.x + m.m6 * n.y + m.m10 * n.z});
+    }
+    return {p.x, p.y, p.z, 0.0f, 0.0f, n.x, n.y, n.z, c.r, c.g, c.b, c.a};
+}
 Vertex2D V2(float x, float y, Color c) { return {x, y, c.r, c.g, c.b, c.a}; }
 Vector3 faceNormal(Vector3 a, Vector3 b, Vector3 c) {
     return Vector3Normalize(Vector3CrossProduct(Vector3Subtract(b, a), Vector3Subtract(c, a)));
@@ -91,6 +112,10 @@ void InitWindow(int w, int h, const char* title) {
     if (!s.win.create(title, w, h)) { std::fprintf(stderr, "InitWindow: window creation failed\n"); std::exit(1); }
     if (!s.rend.init(s.win)) { std::fprintf(stderr, "InitWindow: Vulkan 1.3 not available\n"); std::exit(1); }
     s.ready = true;
+    s.vsync = (s.configFlags & FLAG_VSYNC_HINT) != 0 || s.configFlags == 0;   // raylib's default is vsync off, but a game that sets no flags expects a steady rate
+    s.rend.setVsync(s.vsync);
+    if (s.configFlags & FLAG_WINDOW_RESIZABLE) s.win.setResizable(true);
+    if (s.configFlags & FLAG_WINDOW_TOPMOST) s.win.setTopmost(true);
     {   // shader locations are raylib-style small arrays
     }
     s.start = s.lastFrame = std::chrono::steady_clock::now();
@@ -113,7 +138,9 @@ void TakeScreenshot(const char* path) { S().shot = path; }
 
 void ClearBackground(Color c) {
     State& s = S();
-    s.clear[0] = c.r / 255.0f; s.clear[1] = c.g / 255.0f; s.clear[2] = c.b / 255.0f; s.clear[3] = c.a / 255.0f;
+    float v[4] = {c.r / 255.0f, c.g / 255.0f, c.b / 255.0f, c.a / 255.0f};
+    if (!s.rtId) std::memcpy(s.clear, v, sizeof v);   // the window's clear colour
+    s.rend.setClear(v[0], v[1], v[2], v[3]);           // ... or the active render target's
 }
 void BeginDrawing() {
     State& s = S();
@@ -128,6 +155,14 @@ void EndDrawing() {
         s.rend.endFrame();
         s.inFrame = false;
     }
+    if (s.targetFps > 0) {   // SetTargetFPS: sleep most of the remainder, spin the last millisecond
+        const auto target = s.lastFrame + std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(1.0 / s.targetFps));
+        for (;;) {
+            auto left = target - std::chrono::steady_clock::now();
+            if (left <= std::chrono::steady_clock::duration::zero()) break;
+            if (left > std::chrono::milliseconds(2)) std::this_thread::sleep_for(left - std::chrono::milliseconds(1));
+        }
+    }
     s.win.pollEvents();
     auto now = std::chrono::steady_clock::now();
     s.frameTime = std::chrono::duration<float>(now - s.lastFrame).count();
@@ -136,6 +171,71 @@ void EndDrawing() {
     double t = GetTime();
     if (t - s.fpsStamp >= 1.0) { s.fps = int(s.fpsFrames / (t - s.fpsStamp)); s.fpsFrames = 0; s.fpsStamp = t; }
 }
+
+// ================= window state =================
+void SetConfigFlags(unsigned f) { S().configFlags = f; }
+static void applyFlag(unsigned f, bool on) {
+    State& s = S();
+    if (!s.ready) { if (on) s.configFlags |= f; else s.configFlags &= ~f; return; }
+    if (f & FLAG_VSYNC_HINT) { s.vsync = on; s.rend.setVsync(on); }
+    if (f & FLAG_WINDOW_TOPMOST) s.win.setTopmost(on);
+    if (f & FLAG_WINDOW_RESIZABLE) s.win.setResizable(on);
+    if (f & FLAG_WINDOW_UNDECORATED) s.win.setUndecorated(on);
+    if (f & FLAG_FULLSCREEN_MODE) s.win.setFullscreen(on);
+    if (f & FLAG_BORDERLESS_WINDOWED_MODE) s.win.setBorderless(on);
+    if (on) s.configFlags |= f; else s.configFlags &= ~f;
+}
+void SetWindowState(unsigned f) { applyFlag(f, true); }
+void ClearWindowState(unsigned f) { applyFlag(f, false); }
+bool IsWindowState(unsigned f) {
+    State& s = S();
+    if (f & FLAG_FULLSCREEN_MODE) return s.win.fullscreen();
+    if (f & FLAG_BORDERLESS_WINDOWED_MODE) return s.win.borderless();
+    if (f & FLAG_VSYNC_HINT) return s.vsync;
+    if (f & FLAG_WINDOW_TOPMOST) return s.win.topmost();
+    if (f & FLAG_WINDOW_RESIZABLE) return s.win.resizable();
+    if (f & FLAG_WINDOW_UNDECORATED) return s.win.undecorated();
+    if (f & FLAG_WINDOW_UNFOCUSED) return !s.win.focused();
+    return (s.configFlags & f) != 0;
+}
+bool IsWindowFullscreen() { return S().win.fullscreen() || S().win.borderless(); }
+bool IsWindowFocused() { return S().win.focused(); }
+void ToggleFullscreen() { S().win.setFullscreen(!S().win.fullscreen()); }
+void ToggleBorderlessWindowed() { S().win.setBorderless(!S().win.borderless()); }
+void SetWindowSize(int w, int h) { S().win.setSize(w, h); }
+void SetWindowPosition(int x, int y) { S().win.setPosition(x, y); }
+void SetWindowMinSize(int w, int h) { S().win.setMinSize(w, h); }
+void SetMousePosition(int x, int y) { S().win.setCursorPos(float(x), float(y)); }
+bool IsCursorHidden() { return S().win.cursorHidden(); }
+void ShowCursor() { S().win.showCursor(); }
+void HideCursor() { S().win.hideCursor(); }
+int GetMonitorCount() { return platform::Window::monitorCount(); }
+int GetCurrentMonitor() { return S().win.currentMonitor(); }
+int GetMonitorWidth(int m) { return platform::Window::monitorWidth(m); }
+int GetMonitorHeight(int m) { return platform::Window::monitorHeight(m); }
+int GetMonitorRefreshRate(int m) { return platform::Window::monitorRefresh(m); }
+Vector2 GetMonitorPosition(int m) { int x, y; platform::Window::monitorPosition(m, x, y); return {float(x), float(y)}; }
+const char* GetMonitorName(int m) { S().monName = platform::Window::monitorName(m); return S().monName.c_str(); }
+void SetClipboardText(const char* t) { platform::Window::setClipboard(t ? t : ""); }
+const char* GetClipboardText() { S().clip = platform::Window::clipboard(); return S().clip.c_str(); }
+void OpenURL(const char* url) {
+    if (!url) return;
+    std::string cmd = std::string("start \"\" \"") + url + "\"";
+    std::system(cmd.c_str());
+}
+bool IsFileDropped() { return S().win.filesDropped(); }
+FilePathList LoadDroppedFiles() {
+    auto v = S().win.takeDropped();
+    FilePathList l{unsigned(v.size()), unsigned(v.size()), nullptr};
+    if (!v.empty()) {
+        l.paths = static_cast<char**>(std::calloc(v.size(), sizeof(char*)));
+        for (size_t i = 0; i < v.size(); ++i) { l.paths[i] = static_cast<char*>(std::malloc(v[i].size() + 1)); std::memcpy(l.paths[i], v[i].c_str(), v[i].size() + 1); }
+    }
+    return l;
+}
+void UnloadDroppedFiles(FilePathList l) { for (unsigned i = 0; i < l.count; ++i) std::free(l.paths[i]); std::free(l.paths); }
+int GetKeyPressed() { return S().win.popKey(); }
+void SetTraceLogCallback(TraceLogCallback cb) { S().traceCb = cb; }
 
 // ================= input =================
 bool IsKeyDown(int k) { return S().win.isKeyDown(k); }
@@ -172,7 +272,8 @@ Vector2 GetWorldToScreen(Vector3 p, Camera3D cam) { return GetWorldToScreenEx(p,
 // ================= 3D =================
 static void beginMode3D(Camera3D cam, bool overlay) {
     State& s = S();
-    float aspect = s.win.height() ? float(s.win.width()) / float(s.win.height()) : 1.0f;
+    const float tw = float(s.rend.targetWidth()), th = float(s.rend.targetHeight());
+    float aspect = th > 0 ? tw / th : 1.0f;
     Matrix proj;
     if (cam.projection == CAMERA_PERSPECTIVE) {
         proj = MatrixPerspective(cam.fovy * DEG2RAD, aspect, 0.01, 1000.0);
@@ -182,6 +283,8 @@ static void beginMode3D(Camera3D cam, bool overlay) {
     }
     Matrix view = MatrixLookAt(cam.position, cam.target, cam.up);
     s.view = view; s.proj = proj; s.in3D = true;
+    s.stack.clear(); s.xformActive = false; s.transform = MatrixIdentity(); s.rlMode = RL_MODELVIEW;
+    s.camPos = cam.position; s.overlay3D = overlay;
     float16 vp = MatrixToFloatV(MatrixMultiply(view, proj));
     s.rend.begin3D(vp.v, cam.position.x, cam.position.y, cam.position.z, overlay);
 }
@@ -295,6 +398,7 @@ static void drawMeshCustom(const Mesh& m, const Material& mat, Matrix t) {
 
 void DrawMesh(Mesh m, Material mat, Matrix t) {
     if (!m.vertices || m.vertexCount <= 0) return;
+    if (S().xformActive) t = MatrixMultiply(t, S().transform);   // rlMultMatrixf: the model transform comes after the per-draw one
     if (mat.shader.id != 0) { drawMeshCustom(m, mat, t); return; }
     Color tint = (mat.maps ? mat.maps[MATERIAL_MAP_ALBEDO].color : WHITE);
     // Normal matrix = cofactors of the upper 3x3 (inverse-transpose up to scale).
@@ -632,6 +736,80 @@ void DrawTexturePro(Texture2D tex, Rectangle src, Rectangle dst, Vector2 origin,
     int shader = s.activeShader ? s.activeShader : defaultShaderId();
     quad2DCustom(shader, int(tex.id), p, uv, tint);
 }
+
+// ================= render textures =================
+RenderTexture2D LoadRenderTexture(int w, int h) {
+    int texId = 0;
+    int id = S().rend.createRenderTarget(w, h, &texId);
+    if (!id) return {0, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}};
+    return {unsigned(id), {unsigned(texId), w, h, 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8}, {0, w, h, 1, 0}};
+}
+bool IsRenderTextureReady(RenderTexture2D t) { return t.id != 0; }
+void UnloadRenderTexture(RenderTexture2D t) { if (t.id) S().rend.destroyRenderTarget(int(t.id)); }
+void BeginTextureMode(RenderTexture2D t) {
+    State& s = S();
+    if (!t.id) return;
+    s.rend.beginTarget(int(t.id));
+    s.rtId = int(t.id);
+    s.in3D = false; s.xformActive = false; s.stack.clear();
+}
+void EndTextureMode() {
+    State& s = S();
+    s.rend.endTarget();
+    s.rtId = 0;
+    s.in3D = false;
+}
+
+// ================= rlgl matrix stack / viewport =================
+namespace {
+Matrix& currentMatrix() {
+    State& s = S();
+    static Matrix scratch = MatrixIdentity();
+    if (s.rlMode == RL_PROJECTION) return s.proj;
+    if (s.rlMode == RL_MODELVIEW) return s.xformActive ? s.transform : s.view;
+    return scratch;
+}
+// A projection change mid-pass starts a new camera segment so following draws use it.
+void commitProjection() {
+    State& s = S();
+    if (!s.in3D) return;
+    float16 vp = MatrixToFloatV(MatrixMultiply(s.view, s.proj));
+    s.rend.begin3D(vp.v, s.camPos.x, s.camPos.y, s.camPos.z, s.overlay3D);
+}
+}
+void rlViewport(int x, int y, int w, int h) {
+    State& s = S();
+    const int W = s.rend.targetWidth(), H = s.rend.targetHeight();
+    const int vy = s.rtId ? y : H - (y + h);      // render targets keep GL's bottom-up rows
+    const bool full = x == 0 && w == W && h == H && y == 0;
+    s.rend.setViewport(!full, x, vy, w, h);
+}
+void rlMatrixMode(int mode) { S().rlMode = mode; }
+void rlLoadIdentity() { currentMatrix() = MatrixIdentity(); if (S().rlMode == RL_PROJECTION) commitProjection(); }
+void rlPushMatrix() {
+    State& s = S();
+    if (s.rlMode == RL_MODELVIEW && !s.xformActive) { s.xformActive = true; s.transform = MatrixIdentity(); s.stack.push_back(s.transform); return; }
+    s.stack.push_back(currentMatrix());
+}
+void rlPopMatrix() {
+    State& s = S();
+    if (!s.stack.empty()) { currentMatrix() = s.stack.back(); s.stack.pop_back(); }
+    if (s.stack.empty() && s.rlMode == RL_MODELVIEW) { s.xformActive = false; s.transform = MatrixIdentity(); }
+}
+void rlMultMatrixf(const float* f) {
+    Matrix m{f[0], f[4], f[8], f[12], f[1], f[5], f[9], f[13], f[2], f[6], f[10], f[14], f[3], f[7], f[11], f[15]};
+    currentMatrix() = MatrixMultiply(m, currentMatrix());
+    if (S().rlMode == RL_PROJECTION) commitProjection();
+}
+void rlFrustum(double l, double r, double b, double t, double n, double f) {
+    currentMatrix() = MatrixMultiply(currentMatrix(), MatrixFrustum(l, r, b, t, n, f));
+    if (S().rlMode == RL_PROJECTION) commitProjection();
+}
+void rlOrtho(double l, double r, double b, double t, double n, double f) {
+    currentMatrix() = MatrixMultiply(currentMatrix(), MatrixOrtho(l, r, b, t, n, f));
+    if (S().rlMode == RL_PROJECTION) commitProjection();
+}
+int rlGetVersion() { return 3; }   // RL_OPENGL_33
 
 // ================= render state =================
 void rlEnableDepthMask() { S().rend.setDepthWrite(true); }

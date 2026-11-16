@@ -37,7 +37,7 @@ namespace foundry::rhi::vk {
     X(vkCmdBindDescriptorSets) X(vkCreateDescriptorSetLayout) X(vkDestroyDescriptorSetLayout) \
     X(vkCreateDescriptorPool) X(vkDestroyDescriptorPool) X(vkAllocateDescriptorSets) \
     X(vkUpdateDescriptorSets) X(vkCreateSampler) X(vkDestroySampler) X(vkCmdCopyBufferToImage) X(vkCmdBlitImage) \
-    X(vkFreeCommandBuffers) X(vkCmdCopyBuffer)
+    X(vkFreeCommandBuffers) X(vkCmdCopyBuffer) X(vkCmdClearColorImage)
 
 struct Fns {
     PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr = nullptr;
@@ -83,6 +83,9 @@ public:
     void shutdown();
     // Recreate the swapchain (call on window resize). Returns false while minimized.
     bool resize(uint32_t width, uint32_t height);
+    // vsync on = FIFO; off = IMMEDIATE (or MAILBOX if that is all there is). Rebuilds the swapchain when it changes.
+    bool setVsync(bool on);
+    bool vsync() const { return vsync_; }
 
     // Acquires an image and begins recording; the image is ready for rendering
     // (layout COLOR_ATTACHMENT_OPTIMAL). Returns false if the frame must be skipped.
@@ -135,6 +138,7 @@ private:
     VkPhysicalDeviceLimits limits_{};
     char deviceName_[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE]{};
 
+    bool vsync_ = true;
     VkSwapchainKHR swapchain_ = nullptr;
     VkFormat format_ = VK_FORMAT_UNDEFINED;
     VkExtent2D extent_{};

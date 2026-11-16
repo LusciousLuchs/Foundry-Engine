@@ -149,7 +149,15 @@ bool Context::createSwapchain(uint32_t w, uint32_t h) {
     sci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
     sci.preTransform = caps.currentTransform;
     sci.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-    sci.presentMode = VK_PRESENT_MODE_FIFO_KHR;   // vsync; always available
+    sci.presentMode = VK_PRESENT_MODE_FIFO_KHR;   // always available
+    if (!vsync_) {
+        uint32_t pn = 0;
+        f_.vkGetPhysicalDeviceSurfacePresentModesKHR(phys_, surface_, &pn, nullptr);
+        std::vector<VkPresentModeKHR> modes(pn);
+        f_.vkGetPhysicalDeviceSurfacePresentModesKHR(phys_, surface_, &pn, modes.data());
+        for (VkPresentModeKHR m : {VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_MAILBOX_KHR})
+            if (std::find(modes.begin(), modes.end(), m) != modes.end()) { sci.presentMode = m; break; }
+    }
     sci.clipped = VK_TRUE; sci.oldSwapchain = old;
     VkSwapchainKHR sc;
     VKCHECK(f_.vkCreateSwapchainKHR(dev_, &sci, nullptr, &sc));
@@ -332,6 +340,14 @@ void Context::destroyBuffer(Buffer& b) {
     if (b.buffer) f_.vkDestroyBuffer(dev_, b.buffer, nullptr);
     if (b.memory) f_.vkFreeMemory(dev_, b.memory, nullptr);
     b = {};
+}
+
+bool Context::setVsync(bool on) {
+    if (on == vsync_) return true;
+    vsync_ = on;
+    if (!dev_) return true;
+    f_.vkDeviceWaitIdle(dev_);
+    return createSwapchain(extent_.width, extent_.height);
 }
 
 bool Context::resize(uint32_t w, uint32_t h) {

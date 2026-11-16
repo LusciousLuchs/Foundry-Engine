@@ -11,7 +11,7 @@ layout(location = 2) out vec4 vColor;
 void main() {
     vWorld = inPos; vNormal = inNormal; vColor = inColor;
     vec4 c = pc.viewProj * vec4(inPos, 1.0);
-    c.y = -c.y;
+    if (pc.camPos.w > 0.0) c.y = -c.y;   // w < 0: render-target pass keeps GL orientation (row 0 = bottom)
     c.z = (c.z + c.w) * 0.5;
     gl_Position = c;
 }

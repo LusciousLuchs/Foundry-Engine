@@ -2,6 +2,8 @@
 // Win32 window + input. Key codes and mouse-button numbers match raylib so the
 // compat layer (IsKeyDown, GetMousePosition, ...) maps 1:1.
 #include <cstdint>
+#include <string>
+#include <vector>
 
 namespace foundry::platform {
 
@@ -18,6 +20,8 @@ enum Key : int {
     KEY_F1 = 290, KEY_F2, KEY_F3, KEY_F4, KEY_F5, KEY_F6, KEY_F7, KEY_F8, KEY_F9, KEY_F10,
     KEY_F11, KEY_F12, KEY_LEFT_SHIFT = 340, KEY_LEFT_CONTROL, KEY_LEFT_ALT,
     KEY_RIGHT_SHIFT = 344, KEY_RIGHT_CONTROL, KEY_RIGHT_ALT,
+    KEY_KP_0 = 320, KEY_KP_1, KEY_KP_2, KEY_KP_3, KEY_KP_4, KEY_KP_5, KEY_KP_6, KEY_KP_7, KEY_KP_8, KEY_KP_9,
+    KEY_KP_DECIMAL = 330, KEY_KP_DIVIDE, KEY_KP_MULTIPLY, KEY_KP_SUBTRACT, KEY_KP_ADD, KEY_KP_ENTER, KEY_KP_EQUAL,
 };
 enum MouseButton : int { MOUSE_LEFT = 0, MOUSE_RIGHT = 1, MOUSE_MIDDLE = 2 };
 
@@ -55,6 +59,39 @@ public:
     float mouseDX() const { return dx_; }
     float mouseDY() const { return dy_; }
     float mouseWheel() const { return wheel_; }
+    int popKey();         // next key pressed (raylib key code) or 0
+    // ---- window state ----
+    bool focused() const { return focused_; }
+    bool fullscreen() const { return fullscreen_; }
+    bool borderless() const { return borderless_; }
+    void setFullscreen(bool on);          // borderless window covering the current monitor (not exclusive mode)
+    void setBorderless(bool on);          // same, tracked separately like raylib's flag
+    void setSize(int clientW, int clientH);
+    void setPosition(int x, int y);
+    void setMinSize(int w, int h);
+    void setTopmost(bool on);
+    void setResizable(bool on);
+    void setUndecorated(bool on);
+    bool topmost() const { return topmost_; }
+    bool resizable() const { return resizable_; }
+    bool undecorated() const { return undecorated_; }
+    void setCursorPos(float x, float y);  // client coordinates
+    void hideCursor();
+    void showCursor();
+    bool cursorHidden() const { return cursorHidden_; }
+    // monitors (index 0 = primary)
+    static int monitorCount();
+    static int monitorWidth(int i);
+    static int monitorHeight(int i);
+    static int monitorRefresh(int i);
+    static void monitorPosition(int i, int& x, int& y);
+    static std::string monitorName(int i);
+    int currentMonitor() const;
+    // clipboard / file drop
+    static std::string clipboard();
+    static void setClipboard(const std::string& utf8);
+    bool filesDropped() const { return !dropped_.empty(); }
+    std::vector<std::string> takeDropped() { auto d = std::move(dropped_); dropped_.clear(); return d; }
     void enableCursor();
     void disableCursor();            // hidden + captured, deltas keep flowing
     bool cursorEnabled() const { return cursorEnabled_; }
@@ -66,7 +103,14 @@ private:
     static bool valid(int k) { return k >= 0 && k < 512; }
     void* hwnd_ = nullptr;
     void* hinst_ = nullptr;
-    bool close_ = false, resized_ = false, cursorEnabled_ = true;
+    bool close_ = false, resized_ = false, cursorEnabled_ = true, focused_ = true, cursorHidden_ = false;
+    bool fullscreen_ = false, borderless_ = false, topmost_ = false, resizable_ = true, undecorated_ = false;
+    int minW_ = 0, minH_ = 0;
+    long savedStyle_ = 0; int savedRect_[4]{};
+    unsigned short keyQ_[32]{}; int keyHead_ = 0, keyTail_ = 0;
+    std::vector<std::string> dropped_;
+    void applyStyle();
+    void setFull(bool on, bool& flag);
     int w_ = 0, h_ = 0;
     bool down_[512]{}, pressed_[512]{}, released_[512]{}, repeated_[512]{};
     unsigned chars_[64]{}; int charHead_ = 0, charTail_ = 0;

@@ -7,6 +7,7 @@
 #endif
 #include <windows.h>
 #include <windowsx.h>
+#include <shellapi.h>
 #include <cstdio>
 #include <cstring>
 
@@ -16,8 +17,16 @@ static int mapKey(WPARAM vk, LPARAM lp) {
     if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9') || vk == VK_SPACE) return int(vk);
     if (vk >= VK_F1 && vk <= VK_F12) return KEY_F1 + int(vk - VK_F1);
     bool ext = (lp >> 24) & 1;
+    if (vk >= VK_NUMPAD0 && vk <= VK_NUMPAD9) return KEY_KP_0 + int(vk - VK_NUMPAD0);
     switch (vk) {
-        case VK_ESCAPE: return KEY_ESCAPE;   case VK_RETURN: return KEY_ENTER;
+        case VK_DECIMAL: return KEY_KP_DECIMAL;   case VK_DIVIDE: return KEY_KP_DIVIDE;
+        case VK_MULTIPLY: return KEY_KP_MULTIPLY; case VK_SUBTRACT: return KEY_KP_SUBTRACT;
+        case VK_ADD: return KEY_KP_ADD;
+        case VK_RETURN: return ext ? KEY_KP_ENTER : KEY_ENTER;
+        default: break;
+    }
+    switch (vk) {
+        case VK_ESCAPE: return KEY_ESCAPE;
         case VK_TAB: return KEY_TAB;         case VK_BACK: return KEY_BACKSPACE;
         case VK_INSERT: return KEY_INSERT;   case VK_DELETE: return KEY_DELETE;
         case VK_RIGHT: return KEY_RIGHT;     case VK_LEFT: return KEY_LEFT;
@@ -56,13 +65,35 @@ long Window::handleMessage(unsigned msg, uintptr_t wp, intptr_t lp, bool& handle
         case WM_CLOSE: close_ = true; return 0;
         case WM_SIZE:
             w_ = LOWORD(lp); h_ = HIWORD(lp); resized_ = true; return 0;
+        case WM_SETFOCUS: focused_ = true; return 0;
         case WM_KILLFOCUS:
+            focused_ = false;
             std::memset(down_, 0, sizeof down_); std::memset(mdown_, 0, sizeof mdown_); return 0;
+        case WM_GETMINMAXINFO:
+            if (minW_ > 0 || minH_ > 0) {
+                auto* mm = reinterpret_cast<MINMAXINFO*>(lp);
+                RECT r{0, 0, minW_, minH_};
+                AdjustWindowRect(&r, DWORD(GetWindowLong(HWND(hwnd_), GWL_STYLE)), FALSE);
+                mm->ptMinTrackSize.x = r.right - r.left; mm->ptMinTrackSize.y = r.bottom - r.top;
+                return 0;
+            }
+            handled = false; return 0;
+        case WM_DROPFILES: {
+            HDROP d = reinterpret_cast<HDROP>(wp);
+            UINT n = DragQueryFileW(d, 0xFFFFFFFF, nullptr, 0);
+            for (UINT i = 0; i < n; ++i) {
+                wchar_t w[1024]; DragQueryFileW(d, i, w, 1024);
+                char u[3072]; int len = WideCharToMultiByte(CP_UTF8, 0, w, -1, u, sizeof u, nullptr, nullptr);
+                if (len > 0) dropped_.emplace_back(u);
+            }
+            DragFinish(d);
+            return 0;
+        }
         case WM_KEYDOWN: case WM_SYSKEYDOWN: {
             int k = mapKey(wp, lp);
             if (k) {
                 if (lp & 0x40000000) repeated_[k] = true;        // bit 30: key was already down
-                else if (!down_[k]) pressed_[k] = true;
+                else if (!down_[k]) { pressed_[k] = true; if (((keyHead_ + 1) & 31) != keyTail_) { keyQ_[keyHead_] = (unsigned short)k; keyHead_ = (keyHead_ + 1) & 31; } }
                 down_[k] = true;
             }
             if (msg == WM_SYSKEYDOWN) handled = (wp == VK_MENU || wp == VK_F10); // keep Alt+F4, Alt+Space
@@ -116,6 +147,7 @@ bool Window::create(const char* title, int width, int height) {
     if (!h) { std::fprintf(stderr, "CreateWindow failed (%lu)\n", GetLastError()); return false; }
     hwnd_ = h;
     SetWindowLongPtr(h, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+    DragAcceptFiles(h, TRUE);
     RECT cr; GetClientRect(h, &cr);
     w_ = cr.right; h_ = cr.bottom;
     return true;
@@ -150,6 +182,128 @@ void Window::pollEvents() {
     lastMx_ = mx_; lastMy_ = my_;
 }
 
+int Window::popKey() {
+    if (keyTail_ == keyHead_) return 0;
+    int k = keyQ_[keyTail_]; keyTail_ = (keyTail_ + 1) & 31;
+    return k;
+}
+
+// ---- window state ----
+static RECT monitorRect(HWND h) {
+    MONITORINFO mi{sizeof mi};
+    GetMonitorInfo(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), &mi);
+    return mi.rcMonitor;
+}
+void Window::setFull(bool on, bool& flag) {
+    HWND h = HWND(hwnd_);
+    if (on == (fullscreen_ || borderless_)) { flag = on; return; }   // already in the requested mode
+    if (on) {
+        savedStyle_ = GetWindowLong(h, GWL_STYLE);
+        RECT r; GetWindowRect(h, &r);
+        savedRect_[0] = r.left; savedRect_[1] = r.top; savedRect_[2] = r.right - r.left; savedRect_[3] = r.bottom - r.top;
+        RECT m = monitorRect(h);
+        SetWindowLong(h, GWL_STYLE, WS_POPUP | WS_VISIBLE);
+        SetWindowPos(h, HWND_TOP, m.left, m.top, m.right - m.left, m.bottom - m.top, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+    } else {
+        SetWindowLong(h, GWL_STYLE, savedStyle_);
+        SetWindowPos(h, topmost_ ? HWND_TOPMOST : HWND_NOTOPMOST, savedRect_[0], savedRect_[1], savedRect_[2], savedRect_[3], SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+    }
+    flag = on;
+}
+void Window::setFullscreen(bool on) { setFull(on, fullscreen_); }
+void Window::setBorderless(bool on) { setFull(on, borderless_); }
+void Window::applyStyle() {
+    if (fullscreen_ || borderless_) return;
+    HWND h = HWND(hwnd_);
+    LONG st = undecorated_ ? (WS_POPUP | WS_VISIBLE) : (WS_OVERLAPPEDWINDOW | WS_VISIBLE);
+    if (!undecorated_ && !resizable_) st &= ~(WS_THICKFRAME | WS_MAXIMIZEBOX);
+    SetWindowLong(h, GWL_STYLE, st);
+    SetWindowPos(h, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+}
+void Window::setResizable(bool on) { resizable_ = on; applyStyle(); }
+void Window::setUndecorated(bool on) { undecorated_ = on; applyStyle(); }
+void Window::setTopmost(bool on) {
+    topmost_ = on;
+    SetWindowPos(HWND(hwnd_), on ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+}
+void Window::setSize(int cw, int ch) {
+    if (fullscreen_ || borderless_ || cw < 1 || ch < 1) return;
+    HWND h = HWND(hwnd_);
+    RECT r{0, 0, cw, ch};
+    AdjustWindowRect(&r, DWORD(GetWindowLong(h, GWL_STYLE)), FALSE);
+    SetWindowPos(h, nullptr, 0, 0, r.right - r.left, r.bottom - r.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
+void Window::setPosition(int x, int y) { SetWindowPos(HWND(hwnd_), nullptr, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE); }
+void Window::setMinSize(int w, int h) { minW_ = w; minH_ = h; }
+void Window::setCursorPos(float x, float y) {
+    POINT p{LONG(x), LONG(y)};
+    ClientToScreen(HWND(hwnd_), &p);
+    SetCursorPos(p.x, p.y);
+    mx_ = x; my_ = y; lastMx_ = x; lastMy_ = y;
+}
+void Window::hideCursor() { if (!cursorHidden_) { cursorHidden_ = true; while (ShowCursor(FALSE) >= 0) {} } }
+void Window::showCursor() { if (cursorHidden_) { cursorHidden_ = false; while (ShowCursor(TRUE) < 0) {} } }
+
+// ---- monitors ----
+namespace {
+struct Mon { RECT r; std::string name; int hz; };
+BOOL CALLBACK monCb(HMONITOR m, HDC, LPRECT, LPARAM lp) {
+    auto* v = reinterpret_cast<std::vector<Mon>*>(lp);
+    MONITORINFOEXA mi; mi.cbSize = sizeof mi;
+    if (!GetMonitorInfoA(m, &mi)) return TRUE;
+    DEVMODEA dm{}; dm.dmSize = sizeof dm;
+    int hz = 60;
+    if (EnumDisplaySettingsA(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm) && dm.dmDisplayFrequency > 1) hz = int(dm.dmDisplayFrequency);
+    Mon x{mi.rcMonitor, mi.szDevice, hz};
+    if (mi.dwFlags & MONITORINFOF_PRIMARY) v->insert(v->begin(), x); else v->push_back(x);
+    return TRUE;
+}
+std::vector<Mon> monitors() {
+    std::vector<Mon> v;
+    EnumDisplayMonitors(nullptr, nullptr, monCb, reinterpret_cast<LPARAM>(&v));
+    return v;
+}
+}
+int Window::monitorCount() { return int(monitors().size()); }
+int Window::monitorWidth(int i) { auto m = monitors(); return i >= 0 && i < int(m.size()) ? int(m[size_t(i)].r.right - m[size_t(i)].r.left) : 0; }
+int Window::monitorHeight(int i) { auto m = monitors(); return i >= 0 && i < int(m.size()) ? int(m[size_t(i)].r.bottom - m[size_t(i)].r.top) : 0; }
+int Window::monitorRefresh(int i) { auto m = monitors(); return i >= 0 && i < int(m.size()) ? m[size_t(i)].hz : 0; }
+void Window::monitorPosition(int i, int& x, int& y) { auto m = monitors(); x = y = 0; if (i >= 0 && i < int(m.size())) { x = int(m[size_t(i)].r.left); y = int(m[size_t(i)].r.top); } }
+std::string Window::monitorName(int i) { auto m = monitors(); return i >= 0 && i < int(m.size()) ? m[size_t(i)].name : ""; }
+int Window::currentMonitor() const {
+    RECT mr = monitorRect(HWND(hwnd_));
+    auto m = monitors();
+    for (size_t i = 0; i < m.size(); ++i) if (m[i].r.left == mr.left && m[i].r.top == mr.top) return int(i);
+    return 0;
+}
+
+// ---- clipboard ----
+std::string Window::clipboard() {
+    std::string out;
+    if (!OpenClipboard(nullptr)) return out;
+    if (HANDLE h = GetClipboardData(CF_UNICODETEXT)) {
+        if (auto* w = static_cast<const wchar_t*>(GlobalLock(h))) {
+            int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
+            if (n > 0) { out.resize(size_t(n - 1)); WideCharToMultiByte(CP_UTF8, 0, w, -1, out.data(), n, nullptr, nullptr); }
+            GlobalUnlock(h);
+        }
+    }
+    CloseClipboard();
+    return out;
+}
+void Window::setClipboard(const std::string& u) {
+    int n = MultiByteToWideChar(CP_UTF8, 0, u.c_str(), -1, nullptr, 0);
+    if (n <= 0 || !OpenClipboard(nullptr)) return;
+    EmptyClipboard();
+    HGLOBAL g = GlobalAlloc(GMEM_MOVEABLE, size_t(n) * sizeof(wchar_t));
+    if (g) {
+        MultiByteToWideChar(CP_UTF8, 0, u.c_str(), -1, static_cast<wchar_t*>(GlobalLock(g)), n);
+        GlobalUnlock(g);
+        SetClipboardData(CF_UNICODETEXT, g);
+    }
+    CloseClipboard();
+}
+
 unsigned Window::popChar() {
     if (charTail_ == charHead_) return 0;
     unsigned c = chars_[charTail_]; charTail_ = (charTail_ + 1) & 63;
@@ -158,13 +312,13 @@ unsigned Window::popChar() {
 
 void Window::enableCursor() {
     if (cursorEnabled_) return;
-    cursorEnabled_ = true;
+    cursorEnabled_ = true; cursorHidden_ = false;
     ClipCursor(nullptr);
     while (ShowCursor(TRUE) < 0) {}
 }
 void Window::disableCursor() {
     if (!cursorEnabled_) return;
-    cursorEnabled_ = false;
+    cursorEnabled_ = false; cursorHidden_ = true;
     while (ShowCursor(FALSE) >= 0) {}
     RECT cr; GetClientRect(HWND(hwnd_), &cr);
     POINT tl{cr.left, cr.top}, br{cr.right, cr.bottom};

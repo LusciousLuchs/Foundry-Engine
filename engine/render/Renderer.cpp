@@ -45,6 +45,14 @@ static void clipFix(const float a[16], float o[16]) {
     }
 }
 
+// Render-target passes keep GL orientation (row 0 = bottom): only the depth range changes.
+static void clipFixRT(const float a[16], float o[16]) {
+    for (int c = 0; c < 4; ++c) {
+        float x = a[4 * c], y = a[4 * c + 1], z = a[4 * c + 2], w = a[4 * c + 3];
+        o[4 * c] = x; o[4 * c + 1] = y; o[4 * c + 2] = 0.5f * z + 0.5f * w; o[4 * c + 3] = w;
+    }
+}
+
 static VkShaderModule makeModule(const Context& c, const uint32_t* code, size_t bytes) {
     VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     ci.codeSize = bytes; ci.pCode = code;
@@ -139,7 +147,7 @@ bool Renderer::createPipelineLayouts() {
     VkPipelineLayoutCreateInfo l{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     l.setLayoutCount = 1; l.pSetLayouts = &lightLayout_; l.pushConstantRangeCount = 1; l.pPushConstantRanges = &litPc;
     if (f.vkCreatePipelineLayout(dev, &l, nullptr, &litLayout_) != VK_SUCCESS) return false;
-    VkPushConstantRange uiPc{VK_SHADER_STAGE_VERTEX_BIT, 0, 8};
+    VkPushConstantRange uiPc{VK_SHADER_STAGE_VERTEX_BIT, 0, 16};
     VkPipelineLayoutCreateInfo l2{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     l2.pushConstantRangeCount = 1; l2.pPushConstantRanges = &uiPc;
     if (f.vkCreatePipelineLayout(dev, &l2, nullptr, &uiLayout_) != VK_SUCCESS) return false;
@@ -190,7 +198,7 @@ bool Renderer::createPipelineLayouts() {
 // ------------------------------------------------------------------------------------- pipelines
 VkPipeline Renderer::getPipeline(const Cmd& c) {
     uint64_t key = uint64_t(c.kind) | uint64_t(c.topo) << 2 | uint64_t(c.st.blend) << 3 | uint64_t(c.st.depthTest) << 5 |
-                   uint64_t(c.st.depthWrite) << 6 | uint64_t(c.st.cullBack && c.kind == kCustom) << 7 | uint64_t(uint32_t(c.shader)) << 8;
+                   uint64_t(c.st.depthWrite) << 6 | uint64_t(c.st.cullBack && c.kind == kCustom) << 7 | uint64_t(c.pass != 0) << 40 | uint64_t(uint32_t(c.shader)) << 8;
     auto it = pipes_.find(key);
     if (it != pipes_.end()) return it->second;
     VkPipeline p = buildPipeline(c);
@@ -222,7 +230,9 @@ VkPipeline Renderer::buildPipeline(const Cmd& c) {
     VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
     rs.polygonMode = VK_POLYGON_MODE_FILL; rs.lineWidth = 1.0f;
     rs.cullMode = (c.kind == kCustom && c.st.cullBack) ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE;
-    rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;   // the y flip in clipFix keeps on-screen orientation: raylib's CCW front faces stay CCW
+    // The y flip in clipFix keeps on-screen orientation (raylib's CCW front faces stay CCW). Render-target passes
+    // skip the flip, so the same triangles look clockwise in framebuffer space.
+    rs.frontFace = c.pass ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
     VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
     ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
     VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
@@ -247,7 +257,7 @@ VkPipeline Renderer::buildPipeline(const Cmd& c) {
     VkDynamicState dyn[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
     VkPipelineDynamicStateCreateInfo dsy{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
     dsy.dynamicStateCount = 2; dsy.pDynamicStates = dyn;
-    VkFormat color = ctx_.colorFormat();
+    VkFormat color = c.pass ? VK_FORMAT_R8G8B8A8_UNORM : ctx_.colorFormat();
     VkPipelineRenderingCreateInfo ri{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
     ri.colorAttachmentCount = 1; ri.pColorAttachmentFormats = &color; ri.depthAttachmentFormat = kDepthFormat;
     VkGraphicsPipelineCreateInfo gp{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
@@ -278,7 +288,9 @@ void Renderer::shutdown() {
     for (VkPipelineLayout l : {litLayout_, uiLayout_, customLayout_, shadowLayout_}) if (l) f.vkDestroyPipelineLayout(dev, l, nullptr);
     for (auto m : mods_) if (m) f.vkDestroyShaderModule(dev, m, nullptr);
     for (auto& s : shaders_) { if (s.vs) f.vkDestroyShaderModule(dev, s.vs, nullptr); if (s.fs) f.vkDestroyShaderModule(dev, s.fs, nullptr); }
-    for (auto& t : textures_) { if (t.sampler) f.vkDestroySampler(dev, t.sampler, nullptr); ctx_.destroyImage(t.img); }
+    for (auto& t : textures_) { if (t.sampler) f.vkDestroySampler(dev, t.sampler, nullptr); if (!t.external) ctx_.destroyImage(t.img); }
+    for (auto& t : targets_) { ctx_.destroyImage(t.color); ctx_.destroyImage(t.depth); }
+    targets_.clear();
     if (shadowSampler_) f.vkDestroySampler(dev, shadowSampler_, nullptr);
     ctx_.destroyImage(shadow_);
     for (VkDescriptorPool p : {lightPool_, dynPool_, texPool_}) if (p) f.vkDestroyDescriptorPool(dev, p, nullptr);
@@ -441,7 +453,7 @@ void Renderer::destroyTexture(int id) {
     Texture& t = textures_[size_t(id - 1)];
     ctx_.fn().vkDeviceWaitIdle(ctx_.device());
     if (t.sampler) ctx_.fn().vkDestroySampler(ctx_.device(), t.sampler, nullptr);
-    ctx_.destroyImage(t.img);
+    if (!t.external) ctx_.destroyImage(t.img);
     t.sampler = nullptr; t.used = false;
 }
 void Renderer::generateMipmaps(int id) {
@@ -468,11 +480,27 @@ bool Renderer::beginFrame(float r, float g, float b, float a) {
     slot_ = ctx_.frameIndex();
     for (auto& b : dead_[slot_]) ctx_.destroyBuffer(b);   // this slot's previous frames have finished
     dead_[slot_].clear();
+    passes_.assign(1, Pass{});
+    curPass_ = 0;
     setClear(r, g, b, a);
     nVerts_ = 0; uboUsed_ = 0; nPoint_ = 0; lights_.counts[0] = 0;
     cmds_.clear(); segs_.clear(); curSeg_ = -1; overlay_ = false; inFrame_ = true;
     st_ = State{};
     return true;
+}
+
+void Renderer::setClear(float r, float g, float b, float a) {
+    if (passes_.empty()) return;
+    Pass& p = passes_[size_t(curPass_)];
+    p.clear[0] = r; p.clear[1] = g; p.clear[2] = b; p.clear[3] = a; p.clearSet = true;
+}
+int Renderer::targetWidth() const {
+    if (curPass_ > 0 && size_t(curPass_) < passes_.size()) return targets_[size_t(passes_[size_t(curPass_)].target - 1)].w;
+    return int(frame_.extent.width);
+}
+int Renderer::targetHeight() const {
+    if (curPass_ > 0 && size_t(curPass_) < passes_.size()) return targets_[size_t(passes_[size_t(curPass_)].target - 1)].h;
+    return int(frame_.extent.height);
 }
 
 Renderer::State Renderer::drawState() const {
@@ -482,7 +510,8 @@ Renderer::State Renderer::drawState() const {
 }
 
 bool Renderer::sameBatch(const Cmd& a, const Cmd& b) const {
-    return a.kind == b.kind && a.kind != kCustom && a.topo == b.topo && a.segment == b.segment && a.overlay == b.overlay &&
+    return a.kind == b.kind && a.kind != kCustom && a.topo == b.topo && a.segment == b.segment && a.overlay == b.overlay && a.pass == b.pass &&
+           a.st.vpOn == b.st.vpOn && (!a.st.vpOn || !std::memcmp(a.st.vp, b.st.vp, sizeof a.st.vp)) &&
            a.st.depthTest == b.st.depthTest && a.st.depthWrite == b.st.depthWrite && a.st.blend == b.st.blend &&
            a.st.scissorOn == b.st.scissorOn && (!a.st.scissorOn || (!std::memcmp(a.st.sc, b.st.sc, sizeof a.st.sc))) &&
            a.first + a.count == b.first;
@@ -503,7 +532,7 @@ void Renderer::begin3D(const float vp[16], float cx, float cy, float cz, bool ov
     if (!inFrame_) return;
     std::vector<float> s(20);
     std::memcpy(s.data(), vp, 64);
-    s[16] = cx; s[17] = cy; s[18] = cz; s[19] = 1;
+    s[16] = cx; s[17] = cy; s[18] = cz; s[19] = curPass_ ? -1.0f : 1.0f;   // w < 0: no y flip (render target)
     segs_.push_back(std::move(s));
     curSeg_ = int(segs_.size()) - 1;
     overlay_ = overlay;
@@ -517,7 +546,7 @@ void Renderer::tri(const Vertex& a, const Vertex& b, const Vertex& c) {
     if (!p) return;
     p[0] = a; p[1] = b; p[2] = c;
     Cmd cmd{}; cmd.kind = kLit; cmd.topo = Topo::Triangles; cmd.st = drawState(); cmd.overlay = overlay_;
-    cmd.segment = curSeg_; cmd.first = nVerts_; cmd.count = 3;
+    cmd.segment = curSeg_; cmd.first = nVerts_; cmd.count = 3; cmd.pass = uint8_t(curPass_);
     nVerts_ += 3; pushCmd(cmd);
 }
 
@@ -528,7 +557,7 @@ void Renderer::line(const Vertex& a, const Vertex& b) {
     p[0] = a; p[1] = b;
     p[0].nx = p[0].ny = p[0].nz = p[1].nx = p[1].ny = p[1].nz = 0;   // unlit
     Cmd cmd{}; cmd.kind = kLit; cmd.topo = Topo::Lines; cmd.st = drawState(); cmd.overlay = overlay_;
-    cmd.segment = curSeg_; cmd.first = nVerts_; cmd.count = 2;
+    cmd.segment = curSeg_; cmd.first = nVerts_; cmd.count = 2; cmd.pass = uint8_t(curPass_);
     nVerts_ += 2; pushCmd(cmd);
 }
 
@@ -539,7 +568,7 @@ void Renderer::tri2D(const Vertex2D& a, const Vertex2D& b, const Vertex2D& c) {
     const Vertex2D* in[3] = {&a, &b, &c};
     for (int i = 0; i < 3; ++i) p[i] = {in[i]->x, in[i]->y, 0, 0, 0, 0, 0, 0, in[i]->r, in[i]->g, in[i]->b, in[i]->a};
     Cmd cmd{}; cmd.kind = kUi; cmd.topo = Topo::Triangles; cmd.st = st_;
-    cmd.st.depthTest = cmd.st.depthWrite = false;
+    cmd.st.depthTest = cmd.st.depthWrite = false; cmd.pass = uint8_t(curPass_);
     cmd.first = nVerts_; cmd.count = 3;
     nVerts_ += 3; pushCmd(cmd);
 }
@@ -553,12 +582,12 @@ uint32_t Renderer::snapshotUniforms(int shader, const StdUniforms& u) {
     std::memcpy(dst, s.block.data(), s.block.size());
     float conv[16];
     auto put = [&](int off, const void* src, size_t bytes) { if (off >= 0) std::memcpy(dst + off, src, bytes); };
-    clipFix(u.mvp, conv);
+    if (curPass_) clipFixRT(u.mvp, conv); else clipFix(u.mvp, conv);
     put(s.offMvp, conv, 64);
     put(s.offModel, u.model, 64); put(s.offNormal, u.normal, 64);
     put(s.offView, u.view, 64); put(s.offProj, u.proj, 64);
     put(s.offDiffuse, u.diffuse, 16);
-    float screen[2] = {float(frame_.extent.width), float(frame_.extent.height)};
+    float screen[2] = {float(targetWidth()), float(targetHeight())};
     put(s.offScreen, screen, 8);
     uint32_t off = uboUsed_;
     uboUsed_ += slice;
@@ -572,9 +601,74 @@ void Renderer::drawCustom(int shader, const Vertex* v, uint32_t n, Topo topo, co
     if (off == ~0u) { dropped_ += n; return; }
     std::memcpy(static_cast<Vertex*>(res_[slot_].verts.mapped) + nVerts_, v, size_t(n) * sizeof(Vertex));
     Cmd c{}; c.kind = kCustom; c.topo = topo; c.st = st_; c.shader = shader; c.texture = texture > 0 ? texture : 1;
-    c.first = nVerts_; c.count = n; c.uboOffset = off;
+    c.first = nVerts_; c.count = n; c.uboOffset = off; c.pass = uint8_t(curPass_);
     nVerts_ += n;
     cmds_.push_back(c);
+}
+
+// ------------------------------------------------------------------------------------- render targets
+int Renderer::createRenderTarget(int w, int h, int* textureId) {
+    if (w < 1 || h < 1 || textures_.size() >= kMaxTextures) return 0;
+    const Fns& f = ctx_.fn();
+    Target t;
+    t.w = w; t.h = h;
+    if (!ctx_.createColorImage(uint32_t(w), uint32_t(h), 1, t.color)) return 0;
+    if (!ctx_.createDepthImage(uint32_t(w), uint32_t(h), t.depth)) return 0;
+    // colour image becomes a sampled texture (owned by the target)
+    Texture tex;
+    tex.img = t.color; tex.w = w; tex.h = h; tex.mips = 1; tex.filter = 1; tex.wrap = 1; tex.external = true;
+    VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    ai.descriptorPool = texPool_; ai.descriptorSetCount = 1; ai.pSetLayouts = &texLayout_;
+    if (f.vkAllocateDescriptorSets(ctx_.device(), &ai, &tex.set) != VK_SUCCESS) return 0;
+    if (!makeSampler(tex)) return 0;
+    tex.used = true;
+    textures_.push_back(tex);
+    t.texture = int(textures_.size());
+    // start defined: cleared to transparent black and readable
+    ctx_.submitOneTime([&](VkCommandBuffer cmd) {
+        ctx_.imageBarrier(cmd, t.color.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, 0, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        VkClearColorValue z{};
+        VkImageSubresourceRange r{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        f.vkCmdClearColorImage(cmd, t.color.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &z, 1, &r);
+        ctx_.imageBarrier(cmd, t.color.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                          VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                          VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    });
+    t.used = true;
+    if (textureId) *textureId = t.texture;
+    for (size_t i = 0; i < targets_.size(); ++i)
+        if (!targets_[i].used) { targets_[i] = t; return int(i) + 1; }
+    targets_.push_back(t);
+    return int(targets_.size());
+}
+
+void Renderer::destroyRenderTarget(int id) {
+    if (id < 1 || size_t(id) > targets_.size() || !targets_[size_t(id - 1)].used) return;
+    Target& t = targets_[size_t(id - 1)];
+    ctx_.fn().vkDeviceWaitIdle(ctx_.device());
+    if (t.texture) {
+        Texture& tx = textures_[size_t(t.texture - 1)];
+        if (tx.sampler) ctx_.fn().vkDestroySampler(ctx_.device(), tx.sampler, nullptr);
+        tx.sampler = nullptr; tx.used = false;
+    }
+    ctx_.destroyImage(t.color); ctx_.destroyImage(t.depth);
+    t = Target{};
+}
+
+void Renderer::beginTarget(int id) {
+    if (!inFrame_ || id < 1 || size_t(id) > targets_.size() || !targets_[size_t(id - 1)].used || passes_.size() >= 250) return;
+    Pass p; p.target = id;
+    passes_.push_back(p);
+    curPass_ = int(passes_.size()) - 1;
+    st_ = State{};            // each target starts from default state, like a fresh render context
+    curSeg_ = -1; overlay_ = false;
+}
+void Renderer::endTarget() {
+    if (curPass_ == 0) return;
+    curPass_ = 0;
+    st_ = State{};
+    curSeg_ = -1; overlay_ = false;
 }
 
 // ------------------------------------------------------------------------------------- GPU meshes
@@ -633,7 +727,7 @@ void Renderer::drawCustomMesh(int shader, int mesh, Topo topo, const StdUniforms
     uint32_t off = snapshotUniforms(shader, u);
     if (off == ~0u) { dropped_ += m.count; return; }
     Cmd c{}; c.kind = kCustom; c.topo = topo; c.st = st_; c.shader = shader; c.texture = texture > 0 ? texture : 1;
-    c.mesh = mesh; c.first = 0; c.count = m.count; c.uboOffset = off;
+    c.mesh = mesh; c.first = 0; c.count = m.count; c.uboOffset = off; c.pass = uint8_t(curPass_);
     cmds_.push_back(c);
 }
 
@@ -692,7 +786,7 @@ void Renderer::endFrame() {
             f.vkCmdPushConstants(cmd, shadowLayout_, VK_SHADER_STAGE_VERTEX_BIT, 0, 64, m.v);
             f.vkCmdBindVertexBuffers(cmd, 0, 1, &R.verts.buffer, &off);
             for (const Cmd& c2 : cmds_)   // only opaque built-in lit geometry casts shadows
-                if (c2.kind == kLit && c2.topo == Topo::Triangles && c2.st.depthTest && c2.st.depthWrite && !c2.overlay)
+                if (c2.pass == 0 && c2.kind == kLit && c2.topo == Topo::Triangles && c2.st.depthTest && c2.st.depthWrite && !c2.overlay)
                     f.vkCmdDraw(cmd, c2.count, 1, c2.first, 0);
         }
         f.vkCmdEndRendering(cmd);
@@ -702,11 +796,93 @@ void Renderer::endFrame() {
     }
     std::memcpy(R.lights.mapped, &lights_, sizeof lights_);
 
-    // ---- main pass ----
+    // ---- passes: render targets first (in call order), then the window ----
+    constexpr VkPipelineStageFlags2 kColorOut = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    constexpr VkPipelineStageFlags2 kFragTests = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+    auto drawPass = [&](int passIndex, uint32_t W, uint32_t Hh) {
+        VkRect2D fullSc{{0, 0}, {W, Hh}};
+        VkViewport fullVp{0, 0, float(W), float(Hh), 0, 1};
+        f.vkCmdSetViewport(cmd, 0, 1, &fullVp);
+        f.vkCmdSetScissor(cmd, 0, 1, &fullSc);
+        VkDeviceSize zero = 0;
+        f.vkCmdBindVertexBuffers(cmd, 0, 1, &R.verts.buffer, &zero);
+        VkBuffer curVb = R.verts.buffer;
+        VkPipeline bound = nullptr; int lastSeg = -2, lastTex = -1; Kind lastKind = Kind(255);
+        bool scissored = false, vpCustom = false; int lastSc[4] = {-1, -1, -1, -1}, lastVp[4] = {-1, -1, -1, -1};
+        float uiPc[3] = {float(W), float(Hh), passIndex ? -1.0f : 1.0f};
+        for (const Cmd& c : cmds_) {
+            if (c.pass != passIndex) continue;
+            bool want = c.st.scissorOn;
+            if (want != scissored || (want && std::memcmp(lastSc, c.st.sc, sizeof lastSc))) {
+                VkRect2D r = fullSc;
+                if (want) {
+                    int x = std::max(0, c.st.sc[0]), y = std::max(0, c.st.sc[1]);
+                    r = {{x, y}, {uint32_t(std::max(0, c.st.sc[2])), uint32_t(std::max(0, c.st.sc[3]))}};
+                    std::memcpy(lastSc, c.st.sc, sizeof lastSc);
+                }
+                f.vkCmdSetScissor(cmd, 0, 1, &r);
+                scissored = want;
+            }
+            if (c.st.vpOn != vpCustom || (c.st.vpOn && std::memcmp(lastVp, c.st.vp, sizeof lastVp))) {
+                VkViewport v = fullVp;
+                if (c.st.vpOn) { v = {float(c.st.vp[0]), float(c.st.vp[1]), float(c.st.vp[2]), float(c.st.vp[3]), 0, 1}; std::memcpy(lastVp, c.st.vp, sizeof lastVp); }
+                f.vkCmdSetViewport(cmd, 0, 1, &v);
+                vpCustom = c.st.vpOn;
+            }
+            VkPipeline p = getPipeline(c);
+            if (!p) continue;
+            if (p != bound) { f.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p); bound = p; lastKind = Kind(255); lastSeg = -2; lastTex = -1; }
+            if (c.kind == kLit) {
+                if (lastKind != kLit) f.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, litLayout_, 0, 1, &R.lightSet, 0, nullptr);
+                if (c.segment != lastSeg) {
+                    f.vkCmdPushConstants(cmd, litLayout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 80, segs_[size_t(c.segment)].data());
+                    lastSeg = c.segment;
+                }
+            } else if (c.kind == kUi) {
+                if (lastKind != kUi) f.vkCmdPushConstants(cmd, uiLayout_, VK_SHADER_STAGE_VERTEX_BIT, 0, 12, uiPc);
+            } else {
+                f.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, customLayout_, 0, 1, &R.dynSet, 1, &c.uboOffset);
+                if (c.texture != lastTex) {
+                    f.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, customLayout_, 1, 1, &textures_[size_t(c.texture - 1)].set, 0, nullptr);
+                    lastTex = c.texture;
+                }
+            }
+            lastKind = c.kind;
+            VkBuffer wantVb = R.verts.buffer;
+            if (c.mesh) { const GpuMesh& gm = meshes_[size_t(c.mesh - 1)]; wantVb = gm.dynamic ? gm.buf[slot_].buffer : gm.buf[0].buffer; }
+            if (wantVb != curVb) { f.vkCmdBindVertexBuffers(cmd, 0, 1, &wantVb, &zero); curVb = wantVb; }
+            f.vkCmdDraw(cmd, c.count, 1, c.first, 0);
+        }
+    };
+
+    for (size_t pi = 1; pi < passes_.size(); ++pi) {
+        const Pass& pass = passes_[pi];
+        Target& t = targets_[size_t(pass.target - 1)];
+        ctx_.imageBarrier(cmd, t.color.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                          VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0, kColorOut, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT);
+        ctx_.imageBarrier(cmd, t.depth.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                          kFragTests, 0, kFragTests, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
+        VkRenderingAttachmentInfo tc{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+        tc.imageView = t.color.view; tc.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        tc.loadOp = pass.clearSet ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD; tc.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        tc.clearValue.color = {{pass.clear[0], pass.clear[1], pass.clear[2], pass.clear[3]}};
+        VkRenderingAttachmentInfo td{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+        td.imageView = t.depth.view; td.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+        td.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; td.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE; td.clearValue.depthStencil = {1.0f, 0};
+        VkRenderingInfo tri{VK_STRUCTURE_TYPE_RENDERING_INFO};
+        tri.renderArea = {{0, 0}, {uint32_t(t.w), uint32_t(t.h)}}; tri.layerCount = 1;
+        tri.colorAttachmentCount = 1; tri.pColorAttachments = &tc; tri.pDepthAttachment = &td;
+        f.vkCmdBeginRendering(cmd, &tri);
+        drawPass(int(pi), uint32_t(t.w), uint32_t(t.h));
+        f.vkCmdEndRendering(cmd);
+        ctx_.imageBarrier(cmd, t.color.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                          kColorOut, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    }
+
     VkRenderingAttachmentInfo col{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
     col.imageView = frame_.view; col.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     col.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; col.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    col.clearValue.color = {{clear_[0], clear_[1], clear_[2], clear_[3]}};
+    col.clearValue.color = {{passes_[0].clear[0], passes_[0].clear[1], passes_[0].clear[2], passes_[0].clear[3]}};
     VkRenderingAttachmentInfo dep{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
     dep.imageView = frame_.depthView; dep.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
     dep.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; dep.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE; dep.clearValue.depthStencil = {1.0f, 0};
@@ -714,54 +890,7 @@ void Renderer::endFrame() {
     ri.renderArea = {{0, 0}, frame_.extent}; ri.layerCount = 1;
     ri.colorAttachmentCount = 1; ri.pColorAttachments = &col; ri.pDepthAttachment = &dep;
     f.vkCmdBeginRendering(cmd, &ri);
-    VkViewport vp{0, 0, float(frame_.extent.width), float(frame_.extent.height), 0, 1};
-    f.vkCmdSetViewport(cmd, 0, 1, &vp);
-    VkRect2D fullSc{{0, 0}, frame_.extent};
-    f.vkCmdSetScissor(cmd, 0, 1, &fullSc);
-    VkDeviceSize zero = 0;
-    f.vkCmdBindVertexBuffers(cmd, 0, 1, &R.verts.buffer, &zero);
-    VkBuffer curVb = R.verts.buffer;
-
-    VkPipeline bound = nullptr; int lastSeg = -2, lastTex = -1; Kind lastKind = Kind(255);
-    bool scissored = false; int lastSc[4] = {-1, -1, -1, -1};
-    float screen[2] = {float(frame_.extent.width), float(frame_.extent.height)};
-    for (const Cmd& c : cmds_) {
-        // scissor
-        bool want = c.st.scissorOn;
-        if (want != scissored || (want && std::memcmp(lastSc, c.st.sc, sizeof lastSc))) {
-            VkRect2D r = fullSc;
-            if (want) {
-                int x = std::max(0, c.st.sc[0]), y = std::max(0, c.st.sc[1]);
-                r = {{x, y}, {uint32_t(std::max(0, c.st.sc[2])), uint32_t(std::max(0, c.st.sc[3]))}};
-                std::memcpy(lastSc, c.st.sc, sizeof lastSc);
-            }
-            f.vkCmdSetScissor(cmd, 0, 1, &r);
-            scissored = want;
-        }
-        VkPipeline p = getPipeline(c);
-        if (!p) continue;
-        if (p != bound) { f.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p); bound = p; lastKind = Kind(255); lastSeg = -2; lastTex = -1; }
-        if (c.kind == kLit) {
-            if (lastKind != kLit) f.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, litLayout_, 0, 1, &R.lightSet, 0, nullptr);
-            if (c.segment != lastSeg) {
-                f.vkCmdPushConstants(cmd, litLayout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 80, segs_[size_t(c.segment)].data());
-                lastSeg = c.segment;
-            }
-        } else if (c.kind == kUi) {
-            if (lastKind != kUi) f.vkCmdPushConstants(cmd, uiLayout_, VK_SHADER_STAGE_VERTEX_BIT, 0, 8, screen);
-        } else {
-            f.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, customLayout_, 0, 1, &R.dynSet, 1, &c.uboOffset);
-            if (c.texture != lastTex) {
-                f.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, customLayout_, 1, 1, &textures_[size_t(c.texture - 1)].set, 0, nullptr);
-                lastTex = c.texture;
-            }
-        }
-        lastKind = c.kind;
-        VkBuffer wantVb = R.verts.buffer;
-        if (c.mesh) { const GpuMesh& gm = meshes_[size_t(c.mesh - 1)]; wantVb = gm.dynamic ? gm.buf[slot_].buffer : gm.buf[0].buffer; }
-        if (wantVb != curVb) { f.vkCmdBindVertexBuffers(cmd, 0, 1, &wantVb, &zero); curVb = wantVb; }
-        f.vkCmdDraw(cmd, c.count, 1, c.first, 0);
-    }
+    drawPass(0, frame_.extent.width, frame_.extent.height);
     f.vkCmdEndRendering(cmd);
 
     bool shot = !shotPath_.empty();

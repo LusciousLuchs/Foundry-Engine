@@ -198,6 +198,18 @@ inline Matrix MatrixPerspective(double fovY, double aspect, double nearPlane, do
     r.m14 = -float(farPlane * nearPlane * 2.0f) / fn;
     return r;
 }
+inline Matrix MatrixFrustum(double left, double right, double bottom, double top, double nearPlane, double farPlane) {
+    float rl = float(right - left), tb = float(top - bottom), fn = float(farPlane - nearPlane);
+    Matrix r{};
+    r.m0 = float(nearPlane * 2.0f) / rl;
+    r.m5 = float(nearPlane * 2.0f) / tb;
+    r.m8 = float(right + left) / rl;
+    r.m9 = float(top + bottom) / tb;
+    r.m10 = -float(farPlane + nearPlane) / fn;
+    r.m11 = -1.0f;
+    r.m14 = -float(farPlane * nearPlane * 2.0f) / fn;
+    return r;
+}
 inline Matrix MatrixOrtho(double left, double right, double bottom, double top, double nearPlane, double farPlane) {
     float rl = float(right - left), tb = float(top - bottom), fn = float(farPlane - nearPlane);
     Matrix r{};

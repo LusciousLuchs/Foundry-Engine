@@ -7,6 +7,8 @@
 // shaders (see docs/ARCHITECTURE.md porting checklist).
 #include "compat/raymath.hpp"
 #include "platform/Window.hpp"
+#include <cstdarg>
+#include <cstdlib>
 
 namespace foundry::compat {
 
@@ -23,6 +25,8 @@ struct Texture { unsigned id; int width, height, mipmaps, format; };
 using Texture2D = Texture;
 struct Image { void* data; int width, height, mipmaps, format; };   // RGBA8 only (PIXELFORMAT_UNCOMPRESSED_R8G8B8A8)
 struct Shader { unsigned id; int* locs; };
+struct RenderTexture { unsigned id; Texture texture; Texture depth; };
+using RenderTexture2D = RenderTexture;
 enum { PIXELFORMAT_UNCOMPRESSED_R8G8B8A8 = 7 };
 enum { SHADER_UNIFORM_FLOAT = 0, SHADER_UNIFORM_VEC2, SHADER_UNIFORM_VEC3, SHADER_UNIFORM_VEC4, SHADER_UNIFORM_INT,
        SHADER_UNIFORM_IVEC2, SHADER_UNIFORM_IVEC3, SHADER_UNIFORM_IVEC4, SHADER_UNIFORM_SAMPLER2D };
@@ -64,6 +68,45 @@ FOUNDRY_COLOR(BLANK, 0, 0, 0, 0)            FOUNDRY_COLOR(RAYWHITE, 245, 245, 24
 // Key / mouse constants are the same numbers as raylib's.
 using namespace foundry::platform;   // KEY_* enums
 enum { MOUSE_BUTTON_LEFT = 0, MOUSE_BUTTON_RIGHT = 1, MOUSE_BUTTON_MIDDLE = 2 };
+
+// ---- window state ----
+enum { FLAG_FULLSCREEN_MODE = 0x2, FLAG_WINDOW_RESIZABLE = 0x4, FLAG_WINDOW_UNDECORATED = 0x8, FLAG_WINDOW_TRANSPARENT = 0x10,
+       FLAG_MSAA_4X_HINT = 0x20, FLAG_VSYNC_HINT = 0x40, FLAG_WINDOW_HIDDEN = 0x80, FLAG_WINDOW_ALWAYS_RUN = 0x100,
+       FLAG_WINDOW_MINIMIZED = 0x200, FLAG_WINDOW_MAXIMIZED = 0x400, FLAG_WINDOW_UNFOCUSED = 0x800, FLAG_WINDOW_TOPMOST = 0x1000,
+       FLAG_WINDOW_HIGHDPI = 0x2000, FLAG_WINDOW_MOUSE_PASSTHROUGH = 0x4000, FLAG_BORDERLESS_WINDOWED_MODE = 0x8000,
+       FLAG_INTERLACED_HINT = 0x10000 };
+struct FilePathList { unsigned capacity, count; char** paths; };
+using TraceLogCallback = void (*)(int logLevel, const char* text, va_list args);
+void SetConfigFlags(unsigned flags);                 // before InitWindow
+void SetWindowState(unsigned flags);
+void ClearWindowState(unsigned flags);
+bool IsWindowState(unsigned flag);
+bool IsWindowFullscreen();
+bool IsWindowFocused();
+void ToggleFullscreen();                             // borderless window over the monitor (no mode switch)
+void ToggleBorderlessWindowed();
+void SetWindowSize(int width, int height);
+void SetWindowPosition(int x, int y);
+void SetWindowMinSize(int width, int height);
+void SetMousePosition(int x, int y);
+bool IsCursorHidden();
+void ShowCursor();
+void HideCursor();
+int GetMonitorCount();
+int GetCurrentMonitor();
+int GetMonitorWidth(int monitor);
+int GetMonitorHeight(int monitor);
+int GetMonitorRefreshRate(int monitor);
+Vector2 GetMonitorPosition(int monitor);
+const char* GetMonitorName(int monitor);
+void SetClipboardText(const char* text);
+const char* GetClipboardText();
+void OpenURL(const char* url);
+bool IsFileDropped();
+FilePathList LoadDroppedFiles();
+void UnloadDroppedFiles(FilePathList files);
+int GetKeyPressed();                                 // next pressed key code (0 when none)
+void SetTraceLogCallback(TraceLogCallback callback);
 
 // ---- window / timing ----
 void InitWindow(int width, int height, const char* title);
@@ -211,6 +254,35 @@ void SetTextureFilter(Texture2D texture, int filter);
 void SetTextureWrap(Texture2D texture, int wrap);
 void UnloadTexture(Texture2D texture);
 void DrawTexturePro(Texture2D tex, Rectangle src, Rectangle dst, Vector2 origin, float rotation, Color tint);
+
+// ---- render textures: BeginTextureMode(rt) ... draws ... EndTextureMode(); sample rt.texture (v is flipped, as in GL) ----
+RenderTexture2D LoadRenderTexture(int width, int height);
+bool IsRenderTextureReady(RenderTexture2D target);
+void UnloadRenderTexture(RenderTexture2D target);
+void BeginTextureMode(RenderTexture2D target);
+void EndTextureMode();
+
+// ---- rlgl matrix stack / viewport (subset used with BeginMode3D) ----
+enum { RL_MODELVIEW = 0x1700, RL_PROJECTION = 0x1701, RL_TEXTURE = 0x1702 };
+enum { RL_DEFAULT_SHADER_ATTRIB_LOCATION_POSITION = 0, RL_DEFAULT_SHADER_ATTRIB_LOCATION_TEXCOORD = 1,
+       RL_DEFAULT_SHADER_ATTRIB_LOCATION_NORMAL = 2, RL_DEFAULT_SHADER_ATTRIB_LOCATION_COLOR = 3 };
+inline constexpr double RL_CULL_DISTANCE_NEAR = 0.01, RL_CULL_DISTANCE_FAR = 1000.0;
+#define RL_MALLOC(sz) std::malloc(sz)
+#define RL_CALLOC(n, sz) std::calloc(n, sz)
+#define RL_REALLOC(p, sz) std::realloc(p, sz)
+#define RL_FREE(p) std::free(p)
+#define MatrixToFloat(mat) (foundry::compat::MatrixToFloatV(mat).v)
+void rlViewport(int x, int y, int width, int height);   // GL convention: origin bottom-left of the target
+void rlMatrixMode(int mode);
+void rlLoadIdentity();
+void rlPushMatrix();
+void rlPopMatrix();
+void rlMultMatrixf(const float* matf);
+void rlFrustum(double left, double right, double bottom, double top, double znear, double zfar);
+void rlOrtho(double left, double right, double bottom, double top, double znear, double zfar);
+int rlGetVersion();
+inline void rlUnloadVertexArray(unsigned) {}
+inline void rlUnloadVertexBuffer(unsigned) {}
 
 // ---- render state (rlgl) ----
 void rlEnableDepthMask();

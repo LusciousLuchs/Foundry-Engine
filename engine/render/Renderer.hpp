@@ -59,7 +59,7 @@ public:
 
     bool beginFrame(float r, float g, float b, float a);   // false: skip this frame
     void endFrame();
-    void setClear(float r, float g, float b, float a) { clear_[0] = r; clear_[1] = g; clear_[2] = b; clear_[3] = a; }
+    void setClear(float r, float g, float b, float a);   // clear colour of the current pass
 
     // ---- built-in 3D (world-space vertices) ----
     // overlay = no depth test/write (editor gizmos). viewProj is column-major as raylib stores it.
@@ -75,6 +75,16 @@ public:
     void setCullBack(bool on) { st_.cullBack = on; }
     void setBlend(Blend b) { st_.blend = b; }
     void setScissor(bool on, int x, int y, int w, int h) { st_.scissorOn = on; st_.sc[0] = x; st_.sc[1] = y; st_.sc[2] = w; st_.sc[3] = h; }
+    // Viewport in framebuffer rows of the current target (row 0 = top for the window, bottom for render targets).
+    void setViewport(bool custom, int x, int y, int w, int h) { st_.vpOn = custom; st_.vp[0] = x; st_.vp[1] = y; st_.vp[2] = w; st_.vp[3] = h; }
+    int targetWidth() const;     // size of the current pass's target
+    int targetHeight() const;
+
+    // ---- render targets (offscreen colour + depth; the colour is an ordinary texture id) ----
+    int createRenderTarget(int w, int h, int* textureId);   // id > 0
+    void destroyRenderTarget(int id);
+    void beginTarget(int id);    // following draws go to this target (a new pass, executed before the window's pass)
+    void endTarget();
 
     // ---- custom shaders and textures ----
     int createShader(const PortedShader& s);                    // id > 0, 0 on failure
@@ -109,6 +119,7 @@ public:
     void setShadowsEnabled(bool on) { shadowOn_ = on; }
     bool shadowsEnabled() const { return shadowOn_; }
 
+    void setVsync(bool on) { ctx_.setVsync(on); }
     void requestScreenshot(const std::string& path) { shotPath_ = path; }
     int width() const { return int(frame_.extent.width); }
     int height() const { return int(frame_.extent.height); }
@@ -121,12 +132,15 @@ private:
         bool depthTest = false, depthWrite = true, cullBack = true, scissorOn = false;   // raylib defaults (depth test is on only inside begin3D)
         Blend blend = Blend::Alpha;
         int sc[4]{0, 0, 0, 0};
+        bool vpOn = false;
+        int vp[4]{0, 0, 0, 0};
     };
     enum Kind : uint8_t { kLit = 0, kUi = 1, kCustom = 2 };
     struct Cmd {
         Kind kind; Topo topo; State st;
         bool overlay = false;
         int shader = 0, segment = -1, texture = 0, mesh = 0;
+        uint8_t pass = 0;                // 0 = window, k > 0 = passes_[k]
         uint32_t first = 0, count = 0, uboOffset = 0;
     };
     struct Shader {
@@ -140,7 +154,7 @@ private:
         VkSampler sampler = nullptr;
         VkDescriptorSet set = nullptr;
         int w = 0, h = 0, mips = 1, filter = 1, wrap = 0;
-        bool used = false, useMips = false;
+        bool used = false, useMips = false, external = false;   // external: image owned by a render target
     };
     struct GpuMesh {
         rhi::vk::Buffer buf[rhi::vk::kFramesInFlight];
@@ -149,6 +163,8 @@ private:
         bool dynamic = false, used = false;
         bool dirty[rhi::vk::kFramesInFlight]{};
     };
+    struct Pass { int target = 0; float clear[4]{0, 0, 0, 1}; bool clearSet = false; };
+    struct Target { rhi::vk::Image color, depth; int texture = 0, w = 0, h = 0; bool used = false; };
     struct FrameRes { rhi::vk::Buffer verts, ubo, lights; VkDescriptorSet lightSet = nullptr, dynSet = nullptr; };
 
     bool createPipelineLayouts();
@@ -175,11 +191,13 @@ private:
     std::vector<Shader> shaders_;   // id - 1
     std::vector<Texture> textures_; // id - 1
     std::vector<GpuMesh> meshes_;   // id - 1
+    std::vector<Target> targets_;   // id - 1
+    std::vector<Pass> passes_;      // [0] = window
+    int curPass_ = 0;
     std::vector<rhi::vk::Buffer> dead_[rhi::vk::kFramesInFlight];   // buffers waiting for their frame slot to retire
     uint32_t snapshotUniforms(int shader, const StdUniforms& u);
 
     bool inFrame_ = false, overlay_ = false;
-    float clear_[4]{};
     int slot_ = 0, curSeg_ = -1;
     uint32_t nVerts_ = 0, maxVerts_ = 0, uboUsed_ = 0, uboSize_ = 0, dropped_ = 0;
     State st_;
