@@ -82,6 +82,28 @@ int main() {
     hit = p.pick({{0, 0, 10}, {0, 0, -1}}, tt);
     CHECK(hit >= 0 && p.entities[size_t(hit)].name == "far");                                    // hidden entities are not picked
 
+    {   // OBJ meshes: import, picking is exact (a hole in the middle is not hit), errors are clear
+        Scene m; m.setBaseDir("models/");
+        Result r = m.exec("mesh ring file=torus.obj pos=0,0,0");
+        CHECK(r.ok);
+        const ObjMesh* o = m.model("torus.obj");
+        CHECK(o && o->triangleCount() == 32 * 16 * 2);
+        CHECK(o && std::fabs(o->hi[0] - 0.95f) < 1e-3f && std::fabs(o->hi[1] - 0.25f) < 1e-3f);   // R + r, r
+        float t;
+        CHECK(m.pick({{0.7f, 5, 0}, {0, -1, 0}}, t) == 0 && std::fabs(t - 4.75f) < 1e-2f);        // through the tube: top at y=0.25
+        CHECK(m.pick({{0, 5, 0}, {0, -1, 0}}, t) < 0);                                            // the hole: inside the box, no hit
+        CHECK(m.exec("mesh lone file=pyramid.obj pos=5,0,0").ok);
+        CHECK(m.model("pyramid.obj")->triangleCount() == 6);   // quad = 2 tris, 3 sides, 1 face via negative indices
+        CHECK(!m.exec("mesh bad file=missing.obj").ok);
+        CHECK(!m.exec("mesh nofile").ok);
+        CHECK(!m.exec("cube c file=x.obj").ok);
+        CHECK(m.serialize().find("mesh ring pos=0,0,0 file=torus.obj") != std::string::npos);
+        std::string se;
+        CHECK(m.save("models/_roundtrip_tmp.fscene", se));
+        Scene back; CHECK(back.load("models/_roundtrip_tmp.fscene", se) && back.entities.size() == 2 && back.entities[0].file == "torus.obj");
+        CHECK(back.pick({{0.7f, 5, 0}, {0, -1, 0}}, t) == 0);   // meshes resolve relative to the scene file
+        std::remove("models/_roundtrip_tmp.fscene");
+    }
     std::printf(failures ? "%d failure(s)\n" : "scene tests passed\n", failures);
     return failures;
 }

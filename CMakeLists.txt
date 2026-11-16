@@ -20,7 +20,7 @@ else()
 endif()
 
 # Pure-C++ scene model + command interpreter (builds natively and for Windows).
-add_library(foundry_scene STATIC engine/scene/Scene.cpp)
+add_library(foundry_scene STATIC engine/scene/Scene.cpp engine/scene/Obj.cpp)
 target_link_libraries(foundry_scene PUBLIC foundry_core)
 add_executable(fscene tools/fscene.cpp)
 target_link_libraries(fscene PRIVATE foundry_scene)
@@ -66,7 +66,7 @@ if(FOUNDRY_BUILD_TESTS)
   add_test(NAME foundry_tests COMMAND foundry_tests)
   add_executable(scene_tests tests/scene_tests.cpp)
   target_link_libraries(scene_tests PRIVATE foundry_scene)
-  add_test(NAME scene_tests COMMAND scene_tests)
+  add_test(NAME scene_tests COMMAND scene_tests WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
   # Optional: verify compat math against the real raymath.h of the game being ported.
   set(FOUNDRY_RAYLIB_DIR "" CACHE PATH "Directory containing raylib.h and raymath.h")

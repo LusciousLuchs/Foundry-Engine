@@ -1,6 +1,8 @@
 #include "scene/SceneRender.hpp"
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 namespace foundry::scene {
 using namespace foundry::compat;
@@ -14,7 +16,22 @@ SceneRenderer::SceneRenderer() {
     mat_ = LoadMaterialDefault();
 }
 
+Mesh* SceneRenderer::meshFor(const Scene& scene, const std::string& file) {
+    auto it = models_.find(file);
+    if (it != models_.end()) return &it->second;
+    const ObjMesh* o = scene.model(file);
+    if (!o) return nullptr;
+    Mesh m{};
+    m.vertexCount = int(o->positions.size() / 3); m.triangleCount = m.vertexCount / 3;
+    m.vertices = static_cast<float*>(std::malloc(o->positions.size() * 4));
+    m.normals = static_cast<float*>(std::malloc(o->normals.size() * 4));
+    std::memcpy(m.vertices, o->positions.data(), o->positions.size() * 4);
+    std::memcpy(m.normals, o->normals.data(), o->normals.size() * 4);
+    return &(models_[file] = m);
+}
+
 SceneRenderer::~SceneRenderer() {
+    for (auto& kv : models_) UnloadMesh(kv.second);
     UnloadMesh(cube_); UnloadMesh(sphere_); UnloadMesh(cylinder_); UnloadMesh(cone_); UnloadMesh(plane_);
     UnloadMaterial(mat_);
 }
@@ -45,6 +62,7 @@ void SceneRenderer::drawEntities(const Scene& s, bool markers) {
             case Kind::Cylinder: mesh = &cylinder_; m = MatrixMultiply(MatrixTranslate(0, -0.5f, 0), m); break;
             case Kind::Cone: mesh = &cone_; m = MatrixMultiply(MatrixTranslate(0, -0.5f, 0), m); break;
             case Kind::Plane: mesh = &plane_; break;
+            case Kind::Mesh: if (!(mesh = meshFor(s, e.file))) continue; break;
             default: break;
         }
         mat_.maps[MATERIAL_MAP_ALBEDO].color = e.color;
@@ -52,13 +70,15 @@ void SceneRenderer::drawEntities(const Scene& s, bool markers) {
     }
 }
 
-void SceneRenderer::drawOutline(const Entity& e, Color c) {
+void SceneRenderer::drawOutline(const Entity& e, Color c, const ObjMesh* model) {
     if (e.kind == Kind::Light) { DrawSphereWires(e.pos, 0.42f, 8, 12, c); return; }
     Matrix m = Scene::modelMatrix(e);
     Vector3 v[8];
     float h = e.kind == Kind::Plane ? 0.0f : 0.5f;
+    float lo[3] = {-0.5f, -h, -0.5f}, hi[3] = {0.5f, h, 0.5f};
+    if (e.kind == Kind::Mesh && model) for (int i = 0; i < 3; ++i) { lo[i] = model->lo[i]; hi[i] = model->hi[i]; }
     for (int i = 0; i < 8; ++i)
-        v[i] = Vector3Transform({(i & 1) ? 0.5f : -0.5f, (i & 2) ? h : -h, (i & 4) ? 0.5f : -0.5f}, m);
+        v[i] = Vector3Transform({(i & 1) ? hi[0] : lo[0], (i & 2) ? hi[1] : lo[1], (i & 4) ? hi[2] : lo[2]}, m);
     for (int i = 0; i < 8; ++i)
         for (int b = 1; b < 8; b <<= 1)
             if (!(i & b)) DrawLine3D(v[i], v[i | b], c);

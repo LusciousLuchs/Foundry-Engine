@@ -102,7 +102,7 @@ bool Renderer::createPipelines() {
     if (f.vkCreatePipelineLayout(dev, &l3, nullptr, &shadowLayout_) != VK_SUCCESS) return false;
 
     auto build = [&](VkShaderModule vs, VkShaderModule fs, VkPipelineLayout layout, VkPrimitiveTopology topo,
-                     bool is3D, VkPipeline& out, bool depthOnly = false) {
+                     bool is3D, VkPipeline& out, bool depthOnly = false, bool overlay = false) {
         VkPipelineShaderStageCreateInfo st[2]{};
         st[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vs, "main", nullptr};
         st[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, fs, "main", nullptr};
@@ -123,7 +123,7 @@ bool Renderer::createPipelines() {
         VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
         ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
         VkPipelineDepthStencilStateCreateInfo dsS{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-        dsS.depthTestEnable = is3D; dsS.depthWriteEnable = is3D; dsS.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+        dsS.depthTestEnable = is3D && !overlay; dsS.depthWriteEnable = is3D && !overlay; dsS.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
         VkPipelineColorBlendAttachmentState cba{};
         cba.colorWriteMask = 0xF;
         if (!is3D) {
@@ -149,6 +149,8 @@ bool Renderer::createPipelines() {
     };
     return build(mods_[0], mods_[1], litLayout_, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, true, triPipe_) &&
            build(mods_[0], mods_[1], litLayout_, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, true, linePipe_) &&
+           build(mods_[0], mods_[1], litLayout_, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, true, triOver_, false, true) &&
+           build(mods_[0], mods_[1], litLayout_, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, true, lineOver_, false, true) &&
            build(mods_[2], mods_[3], uiLayout_, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, false, uiPipe_) &&
            build(mods_[4], nullptr, shadowLayout_, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, true, shadowPipe_, true);
 }
@@ -163,6 +165,8 @@ void Renderer::shutdown() {
     if (linePipe_) f.vkDestroyPipeline(dev, linePipe_, nullptr);
     if (uiPipe_) f.vkDestroyPipeline(dev, uiPipe_, nullptr);
     if (shadowPipe_) f.vkDestroyPipeline(dev, shadowPipe_, nullptr);
+    if (triOver_) f.vkDestroyPipeline(dev, triOver_, nullptr);
+    if (lineOver_) f.vkDestroyPipeline(dev, lineOver_, nullptr);
     if (shadowLayout_) f.vkDestroyPipelineLayout(dev, shadowLayout_, nullptr);
     if (shadowSampler_) f.vkDestroySampler(dev, shadowSampler_, nullptr);
     ctx_.destroyImage(shadow_);
@@ -171,7 +175,7 @@ void Renderer::shutdown() {
     for (auto m : mods_) if (m) f.vkDestroyShaderModule(dev, m, nullptr);
     if (pool_) f.vkDestroyDescriptorPool(dev, pool_, nullptr);
     if (setLayout_) f.vkDestroyDescriptorSetLayout(dev, setLayout_, nullptr);
-    triPipe_ = linePipe_ = uiPipe_ = shadowPipe_ = nullptr; shadowLayout_ = nullptr; shadowSampler_ = nullptr; litLayout_ = uiLayout_ = nullptr; pool_ = nullptr; setLayout_ = nullptr;
+    triPipe_ = linePipe_ = uiPipe_ = shadowPipe_ = triOver_ = lineOver_ = nullptr; shadowLayout_ = nullptr; shadowSampler_ = nullptr; litLayout_ = uiLayout_ = nullptr; pool_ = nullptr; setLayout_ = nullptr;
     for (auto& m : mods_) m = nullptr;
     ctx_.shutdown();
 }
@@ -187,13 +191,13 @@ bool Renderer::beginFrame(float r, float g, float b, float a) {
     return true;
 }
 
-void Renderer::begin3D(const float vp[16], float cx, float cy, float cz) {
+void Renderer::begin3D(const float vp[16], float cx, float cy, float cz, bool overlay) {
     if (!inFrame_) return;
     if (in3D_) end3D();
     Segment s{};
     std::memcpy(s.pc, vp, 64);
     s.pc[16] = cx; s.pc[17] = cy; s.pc[18] = cz; s.pc[19] = 1;
-    s.triStart = nTri_; s.lineStart = nLine_;
+    s.triStart = nTri_; s.lineStart = nLine_; s.overlay = overlay;
     segs_.push_back(s); in3D_ = true;
 }
 
@@ -287,7 +291,8 @@ void Renderer::endFrame() {
             f.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipe_);
             f.vkCmdPushConstants(cmd, shadowLayout_, VK_SHADER_STAGE_VERTEX_BIT, 0, 64, m.v);
             f.vkCmdBindVertexBuffers(cmd, 0, 1, &R.tris.buffer, &off);
-            f.vkCmdDraw(cmd, nTri_, 1, 0, 0);
+            for (const Segment& sg : segs_)
+                if (!sg.overlay && sg.triCount) f.vkCmdDraw(cmd, sg.triCount, 1, sg.triStart, 0);   // overlays cast no shadows
         }
         f.vkCmdEndRendering(cmd);
         ctx_.imageBarrier(cmd, shadow_.image, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
@@ -319,12 +324,12 @@ void Renderer::endFrame() {
             f.vkCmdPushConstants(cmd, litLayout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 80, s.pc);
             VkDeviceSize off = 0;
             if (s.triCount) {
-                f.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, triPipe_);
+                f.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s.overlay ? triOver_ : triPipe_);
                 f.vkCmdBindVertexBuffers(cmd, 0, 1, &R.tris.buffer, &off);
                 f.vkCmdDraw(cmd, s.triCount, 1, s.triStart, 0);
             }
             if (s.lineCount) {
-                f.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, linePipe_);
+                f.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s.overlay ? lineOver_ : linePipe_);
                 f.vkCmdBindVertexBuffers(cmd, 0, 1, &R.lines.buffer, &off);
                 f.vkCmdDraw(cmd, s.lineCount, 1, s.lineStart, 0);
             }

@@ -151,6 +151,7 @@ Vector2 GetWorldToScreen(Vector3 p, Camera3D cam);
 
 // ---- 3D ----
 void BeginMode3D(Camera3D camera);
+void BeginMode3DOverlay(Camera3D camera);   // like BeginMode3D, but no depth test (gizmos); close with EndMode3D
 void EndMode3D();
 void DrawLine3D(Vector3 a, Vector3 b, Color c);
 void DrawTriangle3D(Vector3 a, Vector3 b, Vector3 c, Color col);

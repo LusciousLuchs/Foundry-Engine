@@ -11,10 +11,10 @@
 namespace foundry::scene {
 using namespace foundry::compat;
 
-static const char* kKinds[] = {"cube", "sphere", "cylinder", "cone", "plane", "light"};
+static const char* kKinds[] = {"cube", "sphere", "cylinder", "cone", "plane", "light", "mesh"};
 const char* kindName(Kind k) { return kKinds[int(k)]; }
 bool parseKind(const std::string& s, Kind& out) {
-    for (int i = 0; i < 6; ++i) if (s == kKinds[i]) { out = Kind(i); return true; }
+    for (int i = 0; i < 7; ++i) if (s == kKinds[i]) { out = Kind(i); return true; }
     return false;
 }
 
@@ -109,8 +109,13 @@ static bool applyEntityKV(Entity& e, const std::string& key, const std::string& 
     else if (key == "color") { if (!parseColor(val, e.color)) return bad("r,g,b[,a] (0-255) or #rrggbb"); }
     else if (key == "range") { if (!parseFloat(val, e.range) || e.range <= 0) return bad("number > 0"); }
     else if (key == "intensity") { if (!parseFloat(val, e.intensity) || e.intensity < 0) return bad("number >= 0"); }
+    else if (key == "file") {
+        if (e.kind != Kind::Mesh) { error = "'file' only applies to meshes"; return false; }
+        if (val.empty()) return bad("path to an .obj file");
+        e.file = val;
+    }
     else if (key == "visible") { float f; if (!parseFloat(val, f)) return bad("0 or 1"); e.visible = f != 0; }
-    else { error = "unknown key '" + key + "' (valid: pos rot scale color visible" + std::string(e.kind == Kind::Light ? " range intensity" : "") + ")"; return false; }
+    else { error = "unknown key '" + key + "' (valid: pos rot scale color visible" + std::string(e.kind == Kind::Light ? " range intensity" : "") + std::string(e.kind == Kind::Mesh ? " file" : "") + ")"; return false; }
     return true;
 }
 
@@ -137,6 +142,11 @@ Result Scene::cmdAdd(Kind kind, const std::vector<std::string>& tk, size_t i) {
         if (!splitKV(tk[i], k, v)) return err("expected key=value, got '" + tk[i] + "'");
         if (!applyEntityKV(e, k, v, m)) return err(m);
     }
+    if (kind == Kind::Mesh) {
+        if (e.file.empty()) return err("a mesh needs file=<path to .obj>");
+        std::string me;
+        if (!model(e.file, &me)) return err(me);
+    }
     entities.push_back(e);
     return ok(std::string("added ") + kindName(kind) + " " + name, true);
 }
@@ -155,6 +165,10 @@ Result Scene::cmdSet(const std::vector<std::string>& tk) {
             copy.name = v;
         } else if (!applyEntityKV(copy, k, v, m)) return err(m);
     }
+    if (copy.kind == Kind::Mesh && copy.file != e->file) {
+        std::string me;
+        if (!model(copy.file, &me)) return err(me);
+    }
     *e = copy;
     return ok("set " + tk[1], true);
 }
@@ -165,7 +179,7 @@ Result Scene::dispatch(const std::vector<std::string>& tk) {
     const std::string verb = lower(tk[0]);
     Kind kind;
     if (verb == "add") {
-        if (tk.size() < 2 || !parseKind(lower(tk[1]), kind)) return err("usage: add <cube|sphere|cylinder|cone|plane|light> [name] [key=value ...]");
+        if (tk.size() < 2 || !parseKind(lower(tk[1]), kind)) return err("usage: add <cube|sphere|cylinder|cone|plane|light|mesh> [name] [key=value ...]");
         return cmdAdd(kind, tk, 2);
     }
     if (parseKind(verb, kind)) return cmdAdd(kind, tk, 1);
@@ -294,6 +308,7 @@ std::string Scene::serialize() const {
     s += "camera pos=" + v3(env.camPos) + " target=" + v3(env.camTarget) + " fov=" + f2s(env.camFov) + "\n";
     for (const Entity& e : entities) {
         s += std::string(kindName(e.kind)) + " " + e.name + " pos=" + v3(e.pos);
+        if (e.kind == Kind::Mesh) s += " file=" + e.file;
         if (e.kind != Kind::Light) s += " rot=" + v3(e.rot) + " scale=" + v3(e.scale);
         s += " color=" + col(e.color);
         if (e.kind == Kind::Light) s += " range=" + f2s(e.range) + " intensity=" + f2s(e.intensity);
@@ -321,6 +336,10 @@ bool Scene::load(const std::string& path, std::string& error) {
     if (!f) { error = "cannot open " + path; return false; }
     Scene fresh;
     fresh.loading_ = true;
+    {
+        size_t slash = path.find_last_of("/\\");
+        fresh.baseDir_ = slash == std::string::npos ? "" : path.substr(0, slash + 1);
+    }
     std::string line; int n = 0; std::string firstErr;
     while (std::getline(f, line)) {
         ++n;
@@ -331,8 +350,19 @@ bool Scene::load(const std::string& path, std::string& error) {
     fresh.loading_ = false;
     if (!firstErr.empty()) { error = firstErr; return false; }
     entities = std::move(fresh.entities); env = fresh.env;
+    baseDir_ = fresh.baseDir_; models_ = std::move(fresh.models_);
     undo_.clear(); redo_.clear(); ++rev_;
     return true;
+}
+
+const ObjMesh* Scene::model(const std::string& file, std::string* error) const {
+    auto it = models_.find(file);
+    if (it != models_.end()) return it->second.get();
+    auto m = std::make_unique<ObjMesh>();
+    std::string e;
+    bool absolute = !file.empty() && (file[0] == '/' || file[0] == '\\' || (file.size() > 1 && file[1] == ':'));
+    if (!loadObj(absolute ? file : baseDir_ + file, *m, e)) { if (error) *error = e; return nullptr; }
+    return (models_[file] = std::move(m)).get();
 }
 
 // ---------------------------------------------------------------- geometry
@@ -344,7 +374,7 @@ Matrix Scene::modelMatrix(const Entity& e) {
     return MatrixMultiply(m, MatrixTranslate(e.pos.x, e.pos.y, e.pos.z));
 }
 
-bool Scene::raycast(const Entity& e, const Ray3& ray, float& tOut) {
+bool Scene::raycast(const Entity& e, const Ray3& ray, float& tOut) const {
     if (e.kind == Kind::Light) {   // pickable marker sphere
         Vector3 oc = Vector3Subtract(ray.origin, e.pos);
         float r = 0.35f, b = Vector3DotProduct(oc, ray.dir), c = Vector3DotProduct(oc, oc) - r * r, d = b * b - c;
@@ -365,6 +395,8 @@ bool Scene::raycast(const Entity& e, const Ray3& ray, float& tOut) {
     }
     float h = e.kind == Kind::Plane ? 0.01f : 0.5f;   // box slab test (cylinder/cone use their bounding box)
     float lo[3] = {-0.5f, -h, -0.5f}, hi[3] = {0.5f, h, 0.5f};
+    const ObjMesh* mesh = nullptr;
+    if (e.kind == Kind::Mesh && (mesh = model(e.file))) for (int i = 0; i < 3; ++i) { lo[i] = mesh->lo[i]; hi[i] = mesh->hi[i]; }
     float oo[3] = {o.x, o.y, o.z}, dd[3] = {d.x, d.y, d.z};
     float t0 = 0, t1 = 1e30f;
     for (int i = 0; i < 3; ++i) {
@@ -373,6 +405,26 @@ bool Scene::raycast(const Entity& e, const Ray3& ray, float& tOut) {
         if (a > b) std::swap(a, b);
         t0 = std::max(t0, a); t1 = std::min(t1, b);
         if (t0 > t1) return false;
+    }
+    if (mesh) {   // exact: nearest triangle inside the bounding box (local space, same t)
+        float best = 1e30f;
+        for (size_t i = 0; i + 8 < mesh->positions.size(); i += 9) {
+            const float* p = &mesh->positions[i];
+            Vector3 a{p[0], p[1], p[2]}, b{p[3], p[4], p[5]}, c{p[6], p[7], p[8]};
+            Vector3 e1 = Vector3Subtract(b, a), e2 = Vector3Subtract(c, a), pv = Vector3CrossProduct(d, e2);
+            float det = Vector3DotProduct(e1, pv);
+            if (std::fabs(det) < 1e-12f) continue;
+            Vector3 tv = Vector3Subtract(o, a);
+            float u = Vector3DotProduct(tv, pv) / det;
+            if (u < 0 || u > 1) continue;
+            Vector3 qv = Vector3CrossProduct(tv, e1);
+            float v = Vector3DotProduct(d, qv) / det;
+            if (v < 0 || u + v > 1) continue;
+            float t = Vector3DotProduct(e2, qv) / det;
+            if (t > 0 && t < best) best = t;
+        }
+        if (best >= 1e30f) return false;
+        tOut = best; return true;
     }
     tOut = t0; return true;
 }
@@ -389,7 +441,7 @@ int Scene::pick(const Ray3& ray, float& best) const {
 const char* Scene::helpText() {
     return
 "Commands (one per line; the scene file is a list of these):\n"
-"  add <kind> [name] [key=val ...]   kinds: cube sphere cylinder cone plane light\n"
+"  add <kind> [name] [key=val ...]   kinds: cube sphere cylinder cone plane light mesh (mesh needs file=model.obj)\n"
 "  <kind> [name] [key=val ...]       shorthand for add\n"
 "  set <name> key=val ...            keys: pos rot scale color visible name; lights: range intensity\n"
 "  move <name> x,y,z                 add to position\n"

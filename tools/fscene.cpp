@@ -33,6 +33,7 @@ int main(int argc, char** argv) {
     }
 
     Scene scene;
+    { size_t sl = path.find_last_of("/\\"); scene.setBaseDir(sl == std::string::npos ? "" : path.substr(0, sl + 1)); }
     {
         std::ifstream probe(path);
         if (probe) {

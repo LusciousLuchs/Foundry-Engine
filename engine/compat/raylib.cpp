@@ -130,7 +130,7 @@ Ray GetScreenToWorldRay(Vector2 p, Camera3D cam) { return GetScreenToWorldRayEx(
 Vector2 GetWorldToScreen(Vector3 p, Camera3D cam) { return GetWorldToScreenEx(p, cam, GetScreenWidth(), GetScreenHeight()); }
 
 // ================= 3D =================
-void BeginMode3D(Camera3D cam) {
+static void beginMode3D(Camera3D cam, bool overlay) {
     State& s = S();
     float aspect = s.win.height() ? float(s.win.width()) / float(s.win.height()) : 1.0f;
     Matrix proj;
@@ -142,8 +142,10 @@ void BeginMode3D(Camera3D cam) {
     }
     Matrix view = MatrixLookAt(cam.position, cam.target, cam.up);
     float16 vp = MatrixToFloatV(MatrixMultiply(view, proj));
-    s.rend.begin3D(vp.v, cam.position.x, cam.position.y, cam.position.z);
+    s.rend.begin3D(vp.v, cam.position.x, cam.position.y, cam.position.z, overlay);
 }
+void BeginMode3D(Camera3D cam) { beginMode3D(cam, false); }
+void BeginMode3DOverlay(Camera3D cam) { beginMode3D(cam, true); }
 void EndMode3D() { S().rend.end3D(); }
 
 void DrawLine3D(Vector3 a, Vector3 b, Color c) {

@@ -25,8 +25,14 @@ the console you can also write in the file.
     cube bench pos=0,0.5,0 rot=0,0,0 scale=4,1,1.6 color=150,100,60
     light lamp pos=1,3,1.5 color=255,150,90 range=10 intensity=14
 
-Transform order: scale, then rotate about X, Y, Z (degrees), then translate. Kinds: `cube sphere cylinder cone plane light`
-(all unit size, centred; cylinder/cone axis is Y).
+Transform order: scale, then rotate about X, Y, Z (degrees), then translate. Kinds: `cube sphere cylinder cone plane light mesh`
+(primitives are unit size and centred; cylinder/cone axis is Y).
+
+### Imported meshes (`mesh`, Wavefront .obj)
+    mesh ring file=../models/torus.obj pos=-1.2,1.35,0 rot=90,0,0 scale=0.8 color=200,200,215
+`file=` is relative to the scene file (or absolute). Triangles, quads and n-gons (fan-triangulated), vertex normals when
+present (flat otherwise), negative indices. Picking is triangle-exact. The colour tints the mesh. Textures/materials
+(.mtl) and glTF are not read yet. Samples: `models/torus.obj`, `models/pyramid.obj`.
 
 ## Commands (`help` prints this too)
     add <kind> [name] [key=val ...]     <kind> [name] [key=val ...]        (shorthand)
@@ -53,6 +59,8 @@ Renders one frame through the scene's saved camera and exits. Commands are appli
 
 ## Editor controls
     mouse   left click select | right drag orbit | middle drag pan | wheel zoom
+    gizmo   drag a coloured arrow on the selection to move it on that axis (snaps to the grid; hold Shift for free
+            movement). The whole drag is one undo step.
     add     1 cube  2 sphere  3 cylinder  4 cone  5 plane  6 light   (at the view target)
     edit    arrows move X/Z | PgUp/PgDn move Y | Q/E rotate | - / = scale | Shift = fine
             Del delete | Ctrl+D duplicate | Ctrl+Z / Ctrl+Y undo / redo
@@ -61,5 +69,5 @@ Renders one frame through the scene's saved camera and exits. Commands are appli
     other   Ctrl+S save now | H help | F12 screenshot (foundry_shot.ppm)
 
 ## Not yet
-Parenting/hierarchy, imported models (glTF) and textures, gizmos for dragging in the viewport,
+Parenting/hierarchy, glTF models and textures, rotate/scale gizmos (use Q/E, `-`/`=` or the console),
 multi-select, a game-object/behaviour system. Scenes are static; physics hooks come with the engine's physics layer.

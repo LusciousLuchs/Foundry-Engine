@@ -57,6 +57,10 @@ struct Editor {
     float listScroll = 0;
     float snap = 0.5f;
     Vector3 lastCamPos{}, lastCamTarget{};
+    // translate gizmo
+    int hoverAxis = -1, dragAxis = -1;
+    float dragS0 = 0;
+    Vector3 dragOrig{};
 
     void say(const std::string& t, bool ok = true) {
         log.push_back({t, ok, GetTime()});
@@ -111,9 +115,29 @@ void panel(float x, float y, float w, float h) { DrawRectangleRounded({x, y, w, 
 std::string fmt(float v) { char b[32]; std::snprintf(b, sizeof b, "%.3g", double(v)); return b; }
 std::string fmt3(Vector3 v) { return fmt(v.x) + ", " + fmt(v.y) + ", " + fmt(v.z); }
 
+std::string fmtp(float v) { char b[32]; std::snprintf(b, sizeof b, "%.5g", double(v)); return b; }
+float axisOf(Vector3 v, int a) { return a == 0 ? v.x : a == 1 ? v.y : v.z; }
+void setAxis(Vector3& v, int a, float x) { (a == 0 ? v.x : a == 1 ? v.y : v.z) = x; }
+const Vector3 kAxisDir[3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+const Color kAxisCol[3] = {{255, 60, 60, 255}, {80, 220, 80, 255}, {70, 130, 255, 255}};
+float gizmoLen(Vector3 cam, Vector3 at) { return Vector3Length(Vector3Subtract(cam, at)) * 0.22f; }
+
+// Closest approach between a ray (o,d unit) and an axis line (p,a unit): position along the axis and distance.
+float rayAxis(Ray r, Vector3 p, Vector3 a, float& dist) {
+    Vector3 w = Vector3Subtract(r.position, p);
+    float b = Vector3DotProduct(r.direction, a), dw = Vector3DotProduct(r.direction, w), aw = Vector3DotProduct(a, w);
+    float den = 1.0f - b * b;
+    float s = std::fabs(den) < 1e-6f ? 0.0f : (aw - b * dw) / den;
+    float t = std::max(0.0f, s * b - dw);
+    Vector3 onRay = Vector3Add(r.position, Vector3Scale(r.direction, t)), onAxis = Vector3Add(p, Vector3Scale(a, s));
+    dist = Vector3Distance(onRay, onAxis);
+    return s;
+}
+
 const char* kHelp =
     "MOUSE   left click: select    right drag: orbit    middle drag: pan    wheel: zoom\n"
     "ADD     1 cube  2 sphere  3 cylinder  4 cone  5 plane  6 light   (at the view target)\n"
+    "GIZMO   drag a coloured arrow on the selection to move it (snaps; Shift = free)\n"
     "EDIT    arrows: move X/Z   PgUp/PgDn: move Y   Q/E: rotate   - / = : scale\n"
     "        Shift = fine step   Del: delete   Ctrl+D: duplicate   Ctrl+Z/Y: undo/redo\n"
     "VIEW    F: focus selection   C: save view as scene camera   G: grid   [ ]: cycle selection\n"
@@ -144,6 +168,7 @@ int main(int argc, char** argv) {
         return 2;
     }
     const bool renderMode = !renderOut.empty();
+    { size_t sl = ed.path.find_last_of("/\\"); ed.scene.setBaseDir(sl == std::string::npos ? "" : ed.path.substr(0, sl + 1)); }
 
     if (fs::exists(ed.path)) {
         std::string e;
@@ -284,7 +309,40 @@ int main(int argc, char** argv) {
                 float wheel = GetMouseWheelMove();
                 if (wheel != 0 && !overUI) ed.orbit.dist = std::clamp(ed.orbit.dist * std::pow(0.9f, wheel), 0.8f, 200.0f);
             }
-            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            bool gizmoBusy = false;
+            if (Entity* ge = ed.sel()) {
+                Camera3D gc{ed.orbit.position(), ed.orbit.target, {0, 1, 0}, ed.scene.env.camFov, CAMERA_PERSPECTIVE};
+                Ray gr = GetScreenToWorldRay(mouse, gc);
+                float L = gizmoLen(gc.position, ge->pos);
+                if (ed.dragAxis < 0) {
+                    ed.hoverAxis = -1;
+                    float best = 0.07f * L;
+                    if (!overUI)
+                        for (int a = 0; a < 3; ++a) {
+                            float d, sp = rayAxis(gr, ge->pos, kAxisDir[a], d);
+                            if (sp > 0.0f && sp < L * 1.15f && d < best) { best = d; ed.hoverAxis = a; }
+                        }
+                    if (ed.hoverAxis >= 0 && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                        float d; ed.dragAxis = ed.hoverAxis; ed.dragOrig = ge->pos;
+                        ed.dragS0 = rayAxis(gr, ge->pos, kAxisDir[ed.dragAxis], d);
+                    }
+                }
+                if (ed.dragAxis >= 0) {
+                    gizmoBusy = true;
+                    if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+                        float d, sp = rayAxis(gr, ed.dragOrig, kAxisDir[ed.dragAxis], d);
+                        float v = axisOf(ed.dragOrig, ed.dragAxis) + (sp - ed.dragS0);
+                        if (!shift) v = snapTo(v, ed.snap);            // Shift = free movement
+                        ge->pos = ed.dragOrig; setAxis(ge->pos, ed.dragAxis, v);   // live preview; committed on release
+                    } else {
+                        Vector3 fin = ge->pos; ge->pos = ed.dragOrig;
+                        if (fin.x != ed.dragOrig.x || fin.y != ed.dragOrig.y || fin.z != ed.dragOrig.z)
+                            ed.run("set " + ge->name + " pos=" + fmtp(fin.x) + "," + fmtp(fin.y) + "," + fmtp(fin.z), false);
+                        ed.dragAxis = -1;
+                    }
+                }
+            } else { ed.hoverAxis = ed.dragAxis = -1; }
+            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && !gizmoBusy) {
                 if (inRect(mouse, 8, 8, leftW, float(sh) - consoleH - 16)) {
                     int row = int((mouse.y - 8 - 40 + ed.listScroll) / 16);
                     if (row >= 0 && row < int(ed.scene.entities.size())) ed.selected = ed.scene.entities[size_t(row)].name;
@@ -314,10 +372,29 @@ int main(int argc, char** argv) {
         if (ed.showGrid) SceneRenderer::drawGrid(20, 1);
         sr.drawEntities(ed.scene, true);
         if (Entity* e = ed.sel()) {
-            SceneRenderer::drawOutline(*e, {255, 210, 60, 255});
+            SceneRenderer::drawOutline(*e, {255, 210, 60, 255}, e->kind == Kind::Mesh ? ed.scene.model(e->file) : nullptr);
             if (e->kind == Kind::Light) DrawSphereWires(e->pos, e->range, 10, 16, {120, 100, 40, 255});
         }
         EndMode3D();
+        if (Entity* e = ed.sel()) {
+            if (!renderMode) {
+                BeginMode3DOverlay(cam);
+                float L = gizmoLen(cam.position, e->pos);
+                for (int a = 0; a < 3; ++a) {
+                    Color c = (a == ed.dragAxis || a == ed.hoverAxis) ? Color{255, 235, 90, 255} : kAxisCol[a];
+                    Vector3 tip = Vector3Add(e->pos, Vector3Scale(kAxisDir[a], L));
+                    Vector3 u = kAxisDir[(a + 1) % 3], v = kAxisDir[(a + 2) % 3];
+                    for (int i = -2; i <= 2; ++i)
+                        for (int j = -2; j <= 2; ++j) {
+                            if (std::abs(i) + std::abs(j) > 3) continue;
+                            Vector3 off = Vector3Add(Vector3Scale(u, float(i) * 0.006f * L), Vector3Scale(v, float(j) * 0.006f * L));
+                            DrawLine3D(Vector3Add(e->pos, off), Vector3Add(tip, off), c);
+                        }
+                    DrawCubeV(tip, Vector3Add(Vector3Scale(kAxisDir[a], 0.12f * L), Vector3{0.07f * L, 0.07f * L, 0.07f * L}), c);
+                }
+                EndMode3D();
+            }
+        }
 
         // left: entity list
         panel(8, 8, leftW, float(sh) - consoleH - 16);
@@ -373,7 +450,7 @@ int main(int argc, char** argv) {
         }
         if (ed.showHelp) {
             int hw = MeasureText("CONSOLE Tab or /: type any command (see `help`), Enter runs it, Esc leaves, Up/Down: history", 12) + 32;
-            panel(float(sw) / 2 - float(hw) / 2, 60, float(hw), 150);
+            panel(float(sw) / 2 - float(hw) / 2, 60, float(hw), 166);
             DrawText(kHelp, sw / 2 - hw / 2 + 16, 72, 12, {225, 228, 235, 255});
         }
         EndDrawing();

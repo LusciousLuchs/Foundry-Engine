@@ -77,6 +77,7 @@ long Window::handleMessage(unsigned msg, uintptr_t wp, intptr_t lp, bool& handle
             if (wp >= 32 && wp != 127 && ((charHead_ + 1) & 63) != charTail_) { chars_[charHead_] = unsigned(wp); charHead_ = (charHead_ + 1) & 63; }
             return 0;
         case WM_LBUTTONDOWN: case WM_RBUTTONDOWN: case WM_MBUTTONDOWN: {
+            mx_ = float(GET_X_LPARAM(lp)); my_ = float(GET_Y_LPARAM(lp));   // button messages carry the position too
             int b = msg == WM_LBUTTONDOWN ? 0 : msg == WM_RBUTTONDOWN ? 1 : 2;
             if (!mdown_[b]) mpressed_[b] = true;
             mdown_[b] = true;
@@ -84,6 +85,7 @@ long Window::handleMessage(unsigned msg, uintptr_t wp, intptr_t lp, bool& handle
             return 0;
         }
         case WM_LBUTTONUP: case WM_RBUTTONUP: case WM_MBUTTONUP: {
+            mx_ = float(GET_X_LPARAM(lp)); my_ = float(GET_Y_LPARAM(lp));
             int b = msg == WM_LBUTTONUP ? 0 : msg == WM_RBUTTONUP ? 1 : 2;
             mdown_[b] = false; mreleased_[b] = true;
             if (!mdown_[0] && !mdown_[1] && !mdown_[2]) ReleaseCapture();

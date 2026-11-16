@@ -28,7 +28,8 @@ public:
     void setClear(float r, float g, float b, float a) { clear_[0] = r; clear_[1] = g; clear_[2] = b; clear_[3] = a; }
 
     // 3D passes. viewProj is column-major as raylib stores it (MatrixToFloat order).
-    void begin3D(const float viewProj[16], float camX, float camY, float camZ);
+    // overlay = no depth test, drawn over everything so far (editor gizmos, markers).
+    void begin3D(const float viewProj[16], float camX, float camY, float camZ, bool overlay = false);
     void end3D();
     void tri(const Vertex3D& a, const Vertex3D& b, const Vertex3D& c);
     void line(const Vertex3D& a, const Vertex3D& b);
@@ -56,7 +57,7 @@ public:
     uint32_t droppedVertices() const { return dropped_; }
 
 private:
-    struct Segment { float pc[20]; uint32_t triStart, triCount, lineStart, lineCount; };
+    struct Segment { float pc[20]; uint32_t triStart, triCount, lineStart, lineCount; bool overlay; };
     struct FrameRes {
         rhi::vk::Buffer tris, lines, ui, ubo;
         VkDescriptorSet set = nullptr;
@@ -70,7 +71,7 @@ private:
     VkDescriptorSetLayout setLayout_ = nullptr;
     VkDescriptorPool pool_ = nullptr;
     VkPipelineLayout litLayout_ = nullptr, uiLayout_ = nullptr;
-    VkPipeline triPipe_ = nullptr, linePipe_ = nullptr, uiPipe_ = nullptr;
+    VkPipeline triPipe_ = nullptr, linePipe_ = nullptr, uiPipe_ = nullptr, triOver_ = nullptr, lineOver_ = nullptr;
     VkShaderModule mods_[5]{};
     rhi::vk::Image shadow_;
     VkSampler shadowSampler_ = nullptr;

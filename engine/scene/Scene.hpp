@@ -9,7 +9,10 @@
 //
 // Transform order: scale, then rotate about X, Y, Z (degrees), then translate.
 #include "compat/raymath.hpp"
+#include "scene/Obj.hpp"
 #include <cstdint>
+#include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -18,7 +21,7 @@ using foundry::compat::Color;
 using foundry::compat::Matrix;
 using foundry::compat::Vector3;
 
-enum class Kind { Cube, Sphere, Cylinder, Cone, Plane, Light };
+enum class Kind { Cube, Sphere, Cylinder, Cone, Plane, Light, Mesh };
 const char* kindName(Kind k);
 bool parseKind(const std::string& s, Kind& out);
 
@@ -27,6 +30,7 @@ struct Entity {
     Kind kind = Kind::Cube;
     Vector3 pos{0, 0, 0}, rot{0, 0, 0}, scale{1, 1, 1};
     Color color{200, 200, 200, 255};
+    std::string file;                        // meshes only: .obj path (relative to the scene file)
     float range = 8.0f, intensity = 10.0f;   // lights only
     bool visible = true;
 };
@@ -72,10 +76,15 @@ public:
     bool canRedo() const { return !redo_.empty(); }
     uint64_t revision() const { return rev_; }   // bumps on every change, incl. undo/redo
 
+    // Directory that mesh paths are relative to (set automatically by load()).
+    void setBaseDir(const std::string& dir) { baseDir_ = dir; models_.clear(); }
+    // Loaded (and cached) OBJ for a mesh path, or nullptr with `error` set.
+    const ObjMesh* model(const std::string& file, std::string* error = nullptr) const;
+
     static Matrix modelMatrix(const Entity& e);
     // Nearest visible entity hit by the ray (-1 if none); t = distance along ray.
     int pick(const Ray3& ray, float& t) const;
-    static bool raycast(const Entity& e, const Ray3& ray, float& t);
+    bool raycast(const Entity& e, const Ray3& ray, float& t) const;
 
     static const char* helpText();
 
@@ -87,6 +96,8 @@ private:
     std::string uniqueName(const std::string& base) const;
 
     std::vector<Snapshot> undo_, redo_;
+    std::string baseDir_;
+    mutable std::map<std::string, std::unique_ptr<ObjMesh>> models_;
     uint64_t rev_ = 0;
     bool loading_ = false;
 };
