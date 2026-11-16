@@ -37,7 +37,7 @@ namespace foundry::rhi::vk {
     X(vkCmdBindDescriptorSets) X(vkCreateDescriptorSetLayout) X(vkDestroyDescriptorSetLayout) \
     X(vkCreateDescriptorPool) X(vkDestroyDescriptorPool) X(vkAllocateDescriptorSets) \
     X(vkUpdateDescriptorSets) X(vkCreateSampler) X(vkDestroySampler) X(vkCmdCopyBufferToImage) X(vkCmdBlitImage) \
-    X(vkFreeCommandBuffers)
+    X(vkFreeCommandBuffers) X(vkCmdCopyBuffer)
 
 struct Fns {
     PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr = nullptr;
@@ -96,6 +96,8 @@ public:
     int frameIndex() const { return cur_; }   // frame-in-flight slot being recorded
     bool createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, Buffer& out);
     void destroyBuffer(Buffer& b);
+    // Device-local buffer filled from `data` through a staging copy (static geometry). `mapped` stays null.
+    bool createDeviceBuffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage, Buffer& out);
     // Device-local depth image that can also be sampled (shadow maps).
     bool createDepthImage(uint32_t w, uint32_t h, Image& out);
     void destroyImage(Image& img);

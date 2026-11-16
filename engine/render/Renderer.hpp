@@ -87,6 +87,12 @@ public:
     void generateMipmaps(int id);
     void setTextureFilter(int id, int filter);                  // raylib TEXTURE_FILTER_*
     void setTextureWrap(int id, int wrap);                      // raylib TEXTURE_WRAP_*
+    // ---- GPU-resident meshes (vertices stay on the GPU between frames) ----
+    // Static meshes live in device-local memory; dynamic ones keep one host-visible copy per frame in flight.
+    int createMesh(const Vertex* v, uint32_t n, bool dynamic);                      // id > 0
+    void updateMeshAttribute(int id, int attrib, const void* data, size_t bytes, size_t byteOffset);   // raylib attrib: 0 pos, 1 uv, 2 normal, 3 colour
+    void destroyMesh(int id);                                                       // freed once the GPU is done with it
+    void drawCustomMesh(int shader, int mesh, Topo topo, const StdUniforms& u, int texture);
     // Draw with a ported shader. Vertices are in the space the shader expects (mesh-local for 3D,
     // pixels for 2D); matrices come in `u`. texture 0 = white.
     void drawCustom(int shader, const Vertex* v, uint32_t n, Topo topo, const StdUniforms& u, int texture);
@@ -118,7 +124,7 @@ private:
     struct Cmd {
         Kind kind; Topo topo; State st;
         bool overlay = false;
-        int shader = 0, segment = -1, texture = 0;
+        int shader = 0, segment = -1, texture = 0, mesh = 0;
         uint32_t first = 0, count = 0, uboOffset = 0;
     };
     struct Shader {
@@ -133,6 +139,13 @@ private:
         VkDescriptorSet set = nullptr;
         int w = 0, h = 0, mips = 1, filter = 1, wrap = 0;
         bool used = false, useMips = false;
+    };
+    struct GpuMesh {
+        rhi::vk::Buffer buf[rhi::vk::kFramesInFlight];
+        std::vector<Vertex> cpu;     // packed copy (dynamic meshes only)
+        uint32_t count = 0;
+        bool dynamic = false, used = false;
+        bool dirty[rhi::vk::kFramesInFlight]{};
     };
     struct FrameRes { rhi::vk::Buffer verts, ubo, lights; VkDescriptorSet lightSet = nullptr, dynSet = nullptr; };
 
@@ -159,6 +172,9 @@ private:
     VkSampler shadowSampler_ = nullptr;
     std::vector<Shader> shaders_;   // id - 1
     std::vector<Texture> textures_; // id - 1
+    std::vector<GpuMesh> meshes_;   // id - 1
+    std::vector<rhi::vk::Buffer> dead_[rhi::vk::kFramesInFlight];   // buffers waiting for their frame slot to retire
+    uint32_t snapshotUniforms(int shader, const StdUniforms& u);
 
     bool inFrame_ = false, overlay_ = false;
     float clear_[4]{};

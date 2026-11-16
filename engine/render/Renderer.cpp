@@ -268,6 +268,9 @@ void Renderer::shutdown() {
     const Fns& f = ctx_.fn();
     VkDevice dev = ctx_.device();
     f.vkDeviceWaitIdle(dev);
+    for (auto& m : meshes_) for (auto& b : m.buf) ctx_.destroyBuffer(b);
+    for (auto& d : dead_) { for (auto& b : d) ctx_.destroyBuffer(b); d.clear(); }
+    meshes_.clear();
     for (auto& r : res_) { ctx_.destroyBuffer(r.verts); ctx_.destroyBuffer(r.ubo); ctx_.destroyBuffer(r.lights); }
     for (auto& kv : pipes_) if (kv.second) f.vkDestroyPipeline(dev, kv.second, nullptr);
     pipes_.clear();
@@ -440,6 +443,8 @@ bool Renderer::beginFrame(float r, float g, float b, float a) {
     if (win_->minimized()) return false;
     if (!ctx_.beginFrame(frame_)) { ctx_.resize(uint32_t(win_->width()), uint32_t(win_->height())); return false; }
     slot_ = ctx_.frameIndex();
+    for (auto& b : dead_[slot_]) ctx_.destroyBuffer(b);   // this slot's previous frames have finished
+    dead_[slot_].clear();
     setClear(r, g, b, a);
     nVerts_ = 0; uboUsed_ = 0; nPoint_ = 0; lights_.counts[0] = 0;
     cmds_.clear(); segs_.clear(); curSeg_ = -1; overlay_ = false; inFrame_ = true;
@@ -516,15 +521,11 @@ void Renderer::tri2D(const Vertex2D& a, const Vertex2D& b, const Vertex2D& c) {
     nVerts_ += 3; pushCmd(cmd);
 }
 
-void Renderer::drawCustom(int shader, const Vertex* v, uint32_t n, Topo topo, const StdUniforms& u, int texture) {
-    if (!inFrame_ || shader < 1 || size_t(shader) > shaders_.size() || !shaders_[size_t(shader - 1)].src || n == 0) return;
+uint32_t Renderer::snapshotUniforms(int shader, const StdUniforms& u) {
     Shader& s = shaders_[size_t(shader - 1)];
     const uint32_t align = std::max(ctx_.uboAlign(), 16u);
     const uint32_t slice = (uint32_t(s.block.size()) + align - 1) / align * align;
-    if (nVerts_ + n > maxVerts_ || uboUsed_ + slice > uboSize_) { dropped_ += n; return; }
-    std::memcpy(static_cast<Vertex*>(res_[slot_].verts.mapped) + nVerts_, v, size_t(n) * sizeof(Vertex));
-
-    // Snapshot the shader's uniforms plus the per-draw standard ones.
+    if (uboUsed_ + slice > uboSize_) return ~0u;
     uint8_t* dst = static_cast<uint8_t*>(res_[slot_].ubo.mapped) + uboUsed_;
     std::memcpy(dst, s.block.data(), s.block.size());
     float conv[16];
@@ -536,10 +537,80 @@ void Renderer::drawCustom(int shader, const Vertex* v, uint32_t n, Topo topo, co
     put(s.offDiffuse, u.diffuse, 16);
     float screen[2] = {float(frame_.extent.width), float(frame_.extent.height)};
     put(s.offScreen, screen, 8);
+    uint32_t off = uboUsed_;
+    uboUsed_ += slice;
+    return off;
+}
 
+void Renderer::drawCustom(int shader, const Vertex* v, uint32_t n, Topo topo, const StdUniforms& u, int texture) {
+    if (!inFrame_ || shader < 1 || size_t(shader) > shaders_.size() || !shaders_[size_t(shader - 1)].src || n == 0) return;
+    if (nVerts_ + n > maxVerts_) { dropped_ += n; return; }
+    uint32_t off = snapshotUniforms(shader, u);
+    if (off == ~0u) { dropped_ += n; return; }
+    std::memcpy(static_cast<Vertex*>(res_[slot_].verts.mapped) + nVerts_, v, size_t(n) * sizeof(Vertex));
     Cmd c{}; c.kind = kCustom; c.topo = topo; c.st = st_; c.shader = shader; c.texture = texture > 0 ? texture : 1;
-    c.first = nVerts_; c.count = n; c.uboOffset = uboUsed_;
-    nVerts_ += n; uboUsed_ += slice;
+    c.first = nVerts_; c.count = n; c.uboOffset = off;
+    nVerts_ += n;
+    cmds_.push_back(c);
+}
+
+// ------------------------------------------------------------------------------------- GPU meshes
+int Renderer::createMesh(const Vertex* v, uint32_t n, bool dynamic) {
+    if (!n) return 0;
+    GpuMesh m;
+    m.count = n; m.dynamic = dynamic; m.used = true;
+    if (dynamic) {
+        m.cpu.assign(v, v + n);
+        for (int i = 0; i < kFramesInFlight; ++i) {
+            if (!ctx_.createBuffer(VkDeviceSize(n) * sizeof(Vertex), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, m.buf[i])) return 0;
+            std::memcpy(m.buf[i].mapped, v, size_t(n) * sizeof(Vertex));
+        }
+    } else if (!ctx_.createDeviceBuffer(v, VkDeviceSize(n) * sizeof(Vertex), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, m.buf[0])) return 0;
+    // reuse a freed slot if there is one
+    for (size_t i = 0; i < meshes_.size(); ++i)
+        if (!meshes_[i].used) { meshes_[i] = std::move(m); return int(i) + 1; }
+    meshes_.push_back(std::move(m));
+    return int(meshes_.size());
+}
+
+void Renderer::updateMeshAttribute(int id, int attrib, const void* data, size_t bytes, size_t byteOffset) {
+    if (id < 1 || size_t(id) > meshes_.size() || !meshes_[size_t(id - 1)].used || !data) return;
+    GpuMesh& m = meshes_[size_t(id - 1)];
+    if (!m.dynamic) return;   // static meshes are immutable (upload with dynamic=true to update)
+    size_t elem = attrib == 0 || attrib == 2 ? 12 : attrib == 1 ? 8 : attrib == 3 ? 4 : 0;
+    if (!elem) return;
+    size_t first = byteOffset / elem, n = std::min(bytes / elem, m.cpu.size() > first ? m.cpu.size() - first : 0);
+    const uint8_t* src = static_cast<const uint8_t*>(data);
+    for (size_t i = 0; i < n; ++i) {
+        Vertex& d = m.cpu[first + i];
+        const uint8_t* e = src + i * elem;
+        if (attrib == 0) std::memcpy(&d.x, e, 12);
+        else if (attrib == 1) std::memcpy(&d.u, e, 8);
+        else if (attrib == 2) std::memcpy(&d.nx, e, 12);
+        else std::memcpy(&d.r, e, 4);
+    }
+    for (bool& d : m.dirty) d = true;
+}
+
+void Renderer::destroyMesh(int id) {
+    if (id < 1 || size_t(id) > meshes_.size() || !meshes_[size_t(id - 1)].used) return;
+    GpuMesh& m = meshes_[size_t(id - 1)];
+    for (auto& b : m.buf) if (b.buffer) dead_[slot_].push_back(b);   // the GPU may still be reading them
+    m = GpuMesh{};
+}
+
+void Renderer::drawCustomMesh(int shader, int mesh, Topo topo, const StdUniforms& u, int texture) {
+    if (!inFrame_ || shader < 1 || size_t(shader) > shaders_.size() || !shaders_[size_t(shader - 1)].src) return;
+    if (mesh < 1 || size_t(mesh) > meshes_.size() || !meshes_[size_t(mesh - 1)].used) return;
+    GpuMesh& m = meshes_[size_t(mesh - 1)];
+    if (m.dynamic && m.dirty[slot_]) {   // refresh this frame slot's copy (its previous use has retired)
+        std::memcpy(m.buf[slot_].mapped, m.cpu.data(), m.cpu.size() * sizeof(Vertex));
+        m.dirty[slot_] = false;
+    }
+    uint32_t off = snapshotUniforms(shader, u);
+    if (off == ~0u) { dropped_ += m.count; return; }
+    Cmd c{}; c.kind = kCustom; c.topo = topo; c.st = st_; c.shader = shader; c.texture = texture > 0 ? texture : 1;
+    c.mesh = mesh; c.first = 0; c.count = m.count; c.uboOffset = off;
     cmds_.push_back(c);
 }
 
@@ -626,6 +697,7 @@ void Renderer::endFrame() {
     f.vkCmdSetScissor(cmd, 0, 1, &fullSc);
     VkDeviceSize zero = 0;
     f.vkCmdBindVertexBuffers(cmd, 0, 1, &R.verts.buffer, &zero);
+    VkBuffer curVb = R.verts.buffer;
 
     VkPipeline bound = nullptr; int lastSeg = -2, lastTex = -1; Kind lastKind = Kind(255);
     bool scissored = false; int lastSc[4] = {-1, -1, -1, -1};
@@ -662,6 +734,9 @@ void Renderer::endFrame() {
             }
         }
         lastKind = c.kind;
+        VkBuffer wantVb = R.verts.buffer;
+        if (c.mesh) { const GpuMesh& gm = meshes_[size_t(c.mesh - 1)]; wantVb = gm.dynamic ? gm.buf[slot_].buffer : gm.buf[0].buffer; }
+        if (wantVb != curVb) { f.vkCmdBindVertexBuffers(cmd, 0, 1, &wantVb, &zero); curVb = wantVb; }
         f.vkCmdDraw(cmd, c.count, 1, c.first, 0);
     }
     f.vkCmdEndRendering(cmd);

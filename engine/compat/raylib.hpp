@@ -181,7 +181,8 @@ Mesh GenMeshCube(float width, float height, float length);
 Mesh GenMeshSphere(float radius, int rings, int slices);
 Mesh GenMeshCylinder(float radius, float height, int slices);
 Mesh GenMeshCone(float radius, float height, int slices);
-void UploadMesh(Mesh* mesh, bool dynamic);
+void UploadMesh(Mesh* mesh, bool dynamic);   // static: device-local GPU copy; dynamic: refresh with UpdateMeshBuffer
+void UpdateMeshBuffer(Mesh mesh, int index, const void* data, int dataSize, int offset);   // index: 0 pos, 1 uv, 2 normal, 3 colour (non-indexed meshes)
 void UnloadMesh(Mesh mesh);
 Material LoadMaterialDefault();
 void UnloadMaterial(Material m);

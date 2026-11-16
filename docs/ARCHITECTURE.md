@@ -62,7 +62,7 @@ GPU-driven indirect draws, frame arenas, bindless textures. Profile with Tracy.
 - [x] `render/Renderer`: batched forward renderer (depth buffer, sun + hemisphere ambient + 8 point lights, Blinn-Phong, ACES tone mapping, sRGB output, unlit lines, 2D overlay)
 - [x] Sun shadow map (2048², orthographic fit via `SetShadowBounds`, 3x3 hardware PCF, normal-offset bias)
 - [ ] Cascaded shadows, point-light shadows, PBR materials, SSAO, clustered lights beyond 8
-- [ ] GPU-resident meshes (DrawMesh currently re-submits CPU vertices every frame; fine for small scenes, will not scale)
+- [x] GPU-resident meshes for custom-shader draws (`UploadMesh`/`UnloadMesh`/`UpdateMeshBuffer`; static = device-local, dynamic = per-frame-slot copies). The built-in lit path (editor, demos) still transforms vertices on the CPU.
 - [ ] Render graph
 
 ### Running the triangle headless (Linux dev box)
@@ -87,6 +87,18 @@ The game calls 197 distinct raylib functions. The compat layer covers 129 of the
 Done: math, input, 3D/2D primitives, `Mesh`/`Material`/`DrawMesh`, **custom shaders** (all four of the game's), textures
 (`LoadTextureFromImage`, mipmaps, filter/wrap), render state (depth mask/test, culling, blend, scissor), text (built-in
 bitmap font only), picking.
+
+## Measured performance (CPU cost of submitting a draw; GPU time not included)
+`examples/bench_drawmesh.cpp`, Release build, per `DrawMesh` call:
+
+| Mesh | GPU-resident (custom shader) | Re-sent each draw | Built-in lit (CPU transform) |
+|---|---|---|---|
+| 256 tris | 0.2 µs | 6.6 µs | 8.8 µs |
+| 2,048 tris | 0.3 µs | 99 µs | 69 µs |
+| 20,000 tris | 0.4 µs | 1,090 µs | 654 µs |
+
+Resident meshes cost the same regardless of size (one uniform snapshot + one command); GPU time is separate and was
+only measured on a software rasteriser, so it says nothing about real GPUs.
 
 ## Shaders
 The game's GLSL (`#version 330`, loose uniforms) is translated at **build time** by `tools/shaders.py` to Vulkan GLSL,

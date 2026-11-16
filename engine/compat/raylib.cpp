@@ -252,11 +252,10 @@ void DrawGrid(int slices, float spacing) {
     }
 }
 
-static void drawMeshCustom(const Mesh& m, const Material& mat, Matrix t) {
-    State& s = S();
-    static std::vector<Vertex3D> verts;
+// Interleaved vertices (indices expanded) in raylib's attribute order.
+static std::vector<Vertex3D> packMesh(const Mesh& m) {
     const int tris = m.indices ? m.triangleCount : m.vertexCount / 3;
-    verts.resize(size_t(tris) * 3);
+    std::vector<Vertex3D> verts(size_t(tris) * 3);
     for (int k = 0; k < tris * 3; ++k) {
         int i = m.indices ? m.indices[k] : k;
         Vertex3D v{};
@@ -267,14 +266,25 @@ static void drawMeshCustom(const Mesh& m, const Material& mat, Matrix t) {
         else v.r = v.g = v.b = v.a = 255;
         verts[size_t(k)] = v;
     }
+    return verts;
+}
+
+static void drawMeshCustom(const Mesh& m, const Material& mat, Matrix t) {
+    State& s = S();
     render::StdUniforms u{};
     toFloats(t, u.model); toFloats(s.view, u.view); toFloats(s.proj, u.proj);
     toFloats(MatrixMultiply(MatrixMultiply(t, s.view), s.proj), u.mvp);
     toFloats(transposeM(MatrixInvert(t)), u.normal);
     Color tint = mat.maps ? mat.maps[MATERIAL_MAP_ALBEDO].color : WHITE;
     u.diffuse[0] = tint.r / 255.0f; u.diffuse[1] = tint.g / 255.0f; u.diffuse[2] = tint.b / 255.0f; u.diffuse[3] = tint.a / 255.0f;
-    s.rend.drawCustom(int(mat.shader.id), verts.data(), uint32_t(verts.size()), render::Topo::Triangles, u,
-                      mat.maps ? int(mat.maps[MATERIAL_MAP_ALBEDO].texture.id) : 0);
+    const int tex = mat.maps ? int(mat.maps[MATERIAL_MAP_ALBEDO].texture.id) : 0;
+    if (m.vaoId) {   // resident on the GPU: no per-draw vertex work
+        s.rend.drawCustomMesh(int(mat.shader.id), int(m.vaoId), render::Topo::Triangles, u, tex);
+        return;
+    }
+    static std::vector<Vertex3D> verts;
+    verts = packMesh(m);
+    s.rend.drawCustom(int(mat.shader.id), verts.data(), uint32_t(verts.size()), render::Topo::Triangles, u, tex);
 }
 
 void DrawMesh(Mesh m, Material mat, Matrix t) {
@@ -331,6 +341,7 @@ struct MeshBuilder {
         m.vertices = static_cast<float*>(std::malloc(pos.size() * 4)); std::memcpy(m.vertices, pos.data(), pos.size() * 4);
         m.normals = static_cast<float*>(std::malloc(nrm.size() * 4)); std::memcpy(m.normals, nrm.data(), nrm.size() * 4);
         m.texcoords = static_cast<float*>(std::malloc(uv.size() * 4)); std::memcpy(m.texcoords, uv.data(), uv.size() * 4);
+        UploadMesh(&m, false);
         return m;
     }
 };
@@ -384,8 +395,16 @@ static Mesh coneOrCylinder(float r, float h, int slices, bool cone) {
 }
 Mesh GenMeshCylinder(float r, float h, int slices) { return coneOrCylinder(r, h, slices, false); }
 Mesh GenMeshCone(float r, float h, int slices) { return coneOrCylinder(r, h, slices, true); }
-void UploadMesh(Mesh* m, bool) { if (m) m->vaoId = 1; }   // CPU-side for now; GPU-resident meshes are planned
+void UploadMesh(Mesh* m, bool dynamic) {
+    if (!m || !m->vertices || m->vertexCount <= 0 || !S().ready) return;   // before InitWindow: stays CPU-side
+    std::vector<Vertex3D> v = packMesh(*m);
+    m->vaoId = unsigned(S().rend.createMesh(v.data(), uint32_t(v.size()), dynamic));
+}
+void UpdateMeshBuffer(Mesh m, int index, const void* data, int size, int offset) {
+    if (m.vaoId && S().ready) S().rend.updateMeshAttribute(int(m.vaoId), index, data, size_t(size), size_t(offset));
+}
 void UnloadMesh(Mesh m) {
+    if (m.vaoId && S().ready) S().rend.destroyMesh(int(m.vaoId));
     std::free(m.vertices); std::free(m.texcoords); std::free(m.texcoords2); std::free(m.normals);
     std::free(m.tangents); std::free(m.colors); std::free(m.indices); std::free(m.animVertices);
     std::free(m.animNormals); std::free(m.boneIds); std::free(m.boneWeights); std::free(m.boneMatrices);

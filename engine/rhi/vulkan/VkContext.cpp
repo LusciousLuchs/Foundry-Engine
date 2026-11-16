@@ -297,6 +297,35 @@ bool Context::submitOneTime(const std::function<void(VkCommandBuffer)>& record) 
     return r == VK_SUCCESS;
 }
 
+bool Context::createDeviceBuffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage, Buffer& out) {
+    VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bi.size = size; bi.usage = usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT; bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VKCHECK(f_.vkCreateBuffer(dev_, &bi, nullptr, &out.buffer));
+    VkMemoryRequirements req; f_.vkGetBufferMemoryRequirements(dev_, out.buffer, &req);
+    uint32_t mt = 0;
+    if (!findMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, mt)) return false;
+    VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    mai.allocationSize = req.size; mai.memoryTypeIndex = mt;
+    VKCHECK(f_.vkAllocateMemory(dev_, &mai, nullptr, &out.memory));
+    VKCHECK(f_.vkBindBufferMemory(dev_, out.buffer, out.memory, 0));
+    out.size = size; out.mapped = nullptr;
+    Buffer stage;
+    if (!createBuffer(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, stage)) return false;
+    std::memcpy(stage.mapped, data, size_t(size));
+    bool ok = submitOneTime([&](VkCommandBuffer cmd) {
+        VkBufferCopy c{0, 0, size};
+        f_.vkCmdCopyBuffer(cmd, stage.buffer, out.buffer, 1, &c);
+        VkMemoryBarrier2 mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+        mb.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT; mb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        mb.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT; mb.dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT;
+        VkDependencyInfo d{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        d.memoryBarrierCount = 1; d.pMemoryBarriers = &mb;
+        f_.vkCmdPipelineBarrier2(cmd, &d);
+    });
+    destroyBuffer(stage);
+    return ok;
+}
+
 void Context::destroyBuffer(Buffer& b) {
     if (!dev_) return;
     if (b.mapped) f_.vkUnmapMemory(dev_, b.memory);

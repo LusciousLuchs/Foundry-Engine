@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 
 using namespace foundry::compat;
 
@@ -98,6 +99,10 @@ int main(int argc, char** argv) {
             plate.texcoords[i * 2] = V[i][0]; plate.texcoords[i * 2 + 1] = V[i][1];
         }
     }
+    // a dynamic mesh refreshed every frame through UpdateMeshBuffer, like the game's live-edited parts
+    Mesh pulse = GenMeshSphere(0.5f, 16, 24);
+    pulse.vaoId = 0; UploadMesh(&pulse, true);
+    std::vector<float> pulseBase(pulse.vertices, pulse.vertices + pulse.vertexCount * 3);
     Material mat = LoadMaterialDefault(); mat.shader = G.lit;
     Material plateMat = LoadMaterialDefault(); plateMat.shader = G.lit; plateMat.maps[MATERIAL_MAP_DIFFUSE].texture = plateTex;
     Material gridMat = LoadMaterialDefault(); gridMat.shader = grid;
@@ -142,6 +147,13 @@ int main(int argc, char** argv) {
         drawMesh(cyl, MatrixMultiply(MatrixMultiply(MatrixScale(0.5f, 4, 0.5f), MatrixRotateZ(PI / 2)), MatrixTranslate(2.0f, 0.6f, -2.5f)), Color{95, 100, 110, 255}, 0.8f);
         drawMesh(cone, MatrixMultiply(MatrixRotateY(t), MatrixMultiply(MatrixScale(1.4f, 2.0f, 1.4f), MatrixTranslate(4.2f, 0, -1))), Color{230, 180, 50, 255}, 0.2f);
         drawMesh(sphere, MatrixMultiply(MatrixScale(1.1f, 1.1f, 1.1f), MatrixTranslate(-1.0f, 0.55f, 3.5f)), Color{90, 200, 120, 160}, 0.5f);   // translucent (alpha blend)
+        for (int i = 0; i < pulse.vertexCount; ++i) {   // radial ripples travelling over the surface
+            float x = pulseBase[size_t(i) * 3], y = pulseBase[size_t(i) * 3 + 1], z = pulseBase[size_t(i) * 3 + 2];
+            float k = 1.0f + 0.22f * std::sin(7.0f * y + 3.0f * t) * std::cos(5.0f * x + 2.0f * t);
+            pulse.vertices[i * 3] = x * k; pulse.vertices[i * 3 + 1] = y * k; pulse.vertices[i * 3 + 2] = z * k;
+        }
+        UpdateMeshBuffer(pulse, 0, pulse.vertices, pulse.vertexCount * 3 * (int)sizeof(float), 0);
+        drawMesh(pulse, MatrixMultiply(MatrixScale(1.8f, 1.8f, 1.8f), MatrixTranslate(-4.2f, 1.0f, 2.0f)), Color{170, 90, 210, 255}, 0.6f);
 
         // the game's grid: a quad through the GRID shader, depth mask and culling off
         {
