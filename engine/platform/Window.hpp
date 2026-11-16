@@ -107,6 +107,7 @@ private:
     bool close_ = false, resized_ = false, cursorEnabled_ = true, focused_ = true, cursorHidden_ = false;
     bool fullscreen_ = false, borderless_ = false, topmost_ = false, resizable_ = true, undecorated_ = false;
     int minW_ = 0, minH_ = 0;
+    bool warpPending_ = false;   // cursor was just captured: the next poll starts from zero delta
     long savedStyle_ = 0; int savedRect_[4]{};
     unsigned short keyQ_[32]{}; int keyHead_ = 0, keyTail_ = 0;
     std::vector<std::string> dropped_;

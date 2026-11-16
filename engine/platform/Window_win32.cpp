@@ -9,6 +9,7 @@
 #include <windowsx.h>
 #include <shellapi.h>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 namespace foundry::platform {
@@ -176,8 +177,11 @@ void Window::pollEvents() {
         RECT cr; GetClientRect(HWND(hwnd_), &cr);
         POINT c{cr.right / 2, cr.bottom / 2}, p;
         GetCursorPos(&p); ScreenToClient(HWND(hwnd_), &p);
-        dx_ = float(p.x - c.x); dy_ = float(p.y - c.y);
+        if (warpPending_) { dx_ = dy_ = 0; warpPending_ = false; }   // just captured: wherever the pointer was is not a movement
+        else { dx_ = float(p.x - c.x); dy_ = float(p.y - c.y); }
         ClientToScreen(HWND(hwnd_), &c); SetCursorPos(c.x, c.y);
+    } else if (!cursorEnabled_) {
+        dx_ = dy_ = 0; warpPending_ = true;   // not focused (or no window manager): no look input, restart cleanly when focus returns
     } else {
         dx_ = mx_ - lastMx_; dy_ = my_ - lastMy_;
     }
@@ -315,18 +319,22 @@ unsigned Window::popChar() {
 void Window::enableCursor() {
     if (cursorEnabled_) return;
     cursorEnabled_ = true; cursorHidden_ = false;
+    dx_ = dy_ = 0; lastMx_ = mx_; lastMy_ = my_;
     ClipCursor(nullptr);
     while (ShowCursor(TRUE) < 0) {}
 }
 void Window::disableCursor() {
     if (!cursorEnabled_) return;
-    cursorEnabled_ = false; cursorHidden_ = true;
+    cursorEnabled_ = false; cursorHidden_ = true; warpPending_ = true;
     while (ShowCursor(FALSE) >= 0) {}
     RECT cr; GetClientRect(HWND(hwnd_), &cr);
     POINT tl{cr.left, cr.top}, br{cr.right, cr.bottom};
     ClientToScreen(HWND(hwnd_), &tl); ClientToScreen(HWND(hwnd_), &br);
     RECT clip{tl.x, tl.y, br.x, br.y}; ClipCursor(&clip);
     POINT c{(cr.right) / 2, (cr.bottom) / 2}; ClientToScreen(HWND(hwnd_), &c); SetCursorPos(c.x, c.y);
+    // like raylib's DisableCursor: the position state is centred, so whatever the pointer did before is not a movement
+    mx_ = lastMx_ = float(cr.right / 2); my_ = lastMy_ = float(cr.bottom / 2);
+    dx_ = dy_ = 0;
 }
 
 } // namespace foundry::platform
