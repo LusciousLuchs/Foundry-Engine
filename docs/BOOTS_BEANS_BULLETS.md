@@ -1,0 +1,116 @@
+# Boots, Beans, and Bullets — Design Document
+
+Status: **Draft 0.1**. Concept credit: the original idea is a friend's; this document turns it into a buildable plan.
+Items marked **[PROPOSAL]** are my interpretation to fill gaps and need the concept owner's sign-off.
+Items marked **[ASSUMPTION]** concern code that is not in this repository (see §9).
+
+## 1. Pitch
+A single-player, turn-based 3D strategy game played from a **command tent**. You never touch the battlefield: you read
+maps, reports and scout intel, **predict what the enemy will do next**, and issue orders. If your read of the enemy is
+imprecise, your troops pay for it. Win by out-thinking the opposing commander, not by out-clicking them.
+
+## 2. Pillars
+1. **Prediction is the skill.** Every good turn starts with "what will they do?" and the game rewards the reading, not just the reaction.
+2. **Command-tent fantasy.** The tent *is* the interface: map table, field radio, ration crate, wall of casualty tags.
+3. **Consequences land on people.** Misjudgements cost named squads, supplies and morale, not an abstract score.
+4. **Readable and fair.** Enemy behaviour follows learnable rules; no hidden dice that feel unearned.
+
+## 3. Core loop (one turn)
+1. **Briefing** — dispatches arrive: scout reports, radio intercepts, weather, supply status. Information is partial and ages.
+2. **Prediction** — on the map table you mark expected enemy actions (move to / hold / attack / retreat / reinforce) with a confidence level.
+3. **Orders** — assign each unit: move, hold, dig in, ambush, resupply, withdraw. Orders cost command points.
+4. **Commit** — locks the plan. No take-backs.
+5. **Resolution** — a 3D cutscene-style playback of both sides acting simultaneously; the camera leaves the tent for a battlefield view.
+6. **After-action** — predictions are scored against what happened; casualties, morale and supply change; intel is updated.
+
+## 4. Prediction system **[PROPOSAL]**
+This is the heart of the game and the part most needing the concept owner's intent.
+- **Predictions are explicit.** The player marks an enemy unit's likely action and a *certainty* (Hunch / Probable / Certain).
+- **Precision pays and punishes.** A correct, confident prediction grants bonuses to units ordered against it (ambush bonus, free
+  first strike, saved supplies). A wrong, confident prediction applies penalties to the *exposed* units: caught moving,
+  flanked, out of ammo, morale shock. A "Hunch" is cheap and low-risk; "Certain" is high-risk/high-reward.
+- **Not predicting is allowed** but plays blind: no bonuses, and default exposure to surprise.
+- **Enemy AI is legible.** Each enemy officer has a doctrine (aggressive, cautious, supply-driven, ...) plus tells. The AI picks among
+  candidate plans using utility scoring with seeded randomness, so a careful player can learn and exploit habits.
+- **Intel quality** determines how many candidate enemy actions the UI can narrow down: better scouting = a shorter, more
+  trustworthy list.
+
+## 5. Systems
+| System | Summary |
+|---|---|
+| Map | Hex or square grid over a 3D terrain; elevation, cover, roads, fords, fog of war |
+| Units | Squads (rifle, MG, mortar, scouts, medics, engineers, armour later). Strength, ammo, morale, fatigue |
+| Supply ("Beans" and "Bullets") | Food and ammunition as two separate pools per unit; resupply routes can be cut |
+| Morale ("Boots") | Fatigue and marching distance; exhausted units fight and move worse |
+| Intel | Scouts, radio intercepts, aerial photos (delayed); each report carries age and reliability |
+| Weather/time | Rain, fog, night alter visibility, movement and what the enemy is likely to risk |
+| Campaign | Sequence of scenarios with a persistent roster; casualties carry over, veterans improve |
+
+Title tie-in: *Boots* = movement/fatigue, *Beans* = food/supply, *Bullets* = ammo/firepower. Resource tension is a core lever.
+
+## 6. Presentation
+- **Tent interior** (hub): map table with 3D terrain model and unit tokens, radio set, intel board, ration crate, casualty list.
+  All UI is diegetic where possible (paper reports, pins, grease-pencil on acetate).
+- **Battlefield view** during resolution: camera orbits/follows action; units play move/fire/fall animations.
+- **Style:** low-poly, warm lamp lighting inside, muted outdoor palette. Foundry has a sun, hemisphere ambient, 8 point lights
+  and a sun shadow map — enough for lantern-lit tent interiors and daylight battlefields.
+- **Audio:** canvas flapping, distant artillery, radio chatter, typewriter.
+
+## 7. Technology
+- **Engine:** Foundry Engine (this repo): C++, Vulkan 1.3, Windows x64 (runs on Linux via Wine/Proton), raylib-style compat API,
+  Dear ImGui, scene files (`.fscene`), headless `fscene` command-line editor.
+- **Game layout** (new repo or `games/bbb/`): 
+  ```
+  src/core/     rules engine: grid, units, orders, resolution, AI  (no rendering; unit-testable)
+  src/app/      state machine: menu, tent, resolution, after-action, save/load
+  src/ui/       ImGui panels + diegetic tent widgets
+  assets/       models, textures, audio, scenarios (text/JSON)
+  ```
+- **Determinism:** resolution is a pure function of (state, orders, seed). Enables replays, tests, and "undo to briefing" for debugging.
+- **Scenarios/data-driven:** units, doctrines and maps in text/JSON so content can be added without recompiling.
+- **Physics:** not needed for rules (turn-based); only for cosmetic effects. Foundry's physics is on the roadmap and is not a dependency.
+- **Known engine gaps to watch:** only 8 point lights; no cascaded shadows; built-in lit path transforms vertices on CPU (fine for
+  low-poly scenes, watch unit counts); fullscreen is borderless; GPU testing so far is software-rasteriser only.
+
+## 8. Update & installer **[ASSUMPTION]**
+The brief: reuse the existing update and installer framework from Gunsmith3D. Observed in this repo
+(`port/gunsmith3d/CMakeLists.txt`): the game links **winhttp** (consistent with an online update check), generates
+`version.hpp` from a `version.hpp.in` with `MAJOR.MINOR.PATCH-<stage>` (e.g. `0.8.28-alpha`), and embeds `CHANGELOG.md` into the
+binary. Plan:
+1. Copy the Gunsmith3D updater/installer modules and their CMake/packaging scripts as-is; parameterise product name, app id,
+   install directory, update-feed URL, executable name, icons and licence text. No behavioural changes in the first pass.
+2. Keep the same version scheme and release stages so the existing release tooling applies.
+3. Keep the in-game changelog view fed from `CHANGELOG.md`.
+4. Use a **separate update feed and app id** so Gunsmith3D and this game can never update or uninstall each other.
+5. Acceptance: fresh install, update from N-1 to N, uninstall, and run under Wine all succeed.
+
+**Blocker:** that code lives in the Gunsmith3D repository, which this session cannot see. Before implementation I need the repo
+attached (or the updater/installer directories pasted) to confirm module boundaries and what must be parameterised.
+
+## 9. Milestones
+| # | Goal | Done when |
+|---|---|---|
+| M0 | Project scaffold on Foundry + installer/updater ported | Installs, launches an empty window, self-updates |
+| M1 | Rules prototype (text mode / debug draw) | One squad type vs scripted enemy, orders + resolution deterministic, unit tests |
+| M2 | Tent hub + map table | Walk-free tent UI, 3D terrain table, selectable units, order entry |
+| M3 | Prediction system | Predictions/certainty scored in after-action; penalties/bonuses work |
+| M4 | Battlefield resolution view | Animated playback of a turn |
+| M5 | Enemy AI doctrines + intel/fog of war | Three distinct enemy officers; scouting matters |
+| M6 | Supply, morale, weather | "Boots, Beans, Bullets" pressures all active |
+| M7 | Campaign + save/load + content | 6–8 scenarios, persistent roster |
+| M8 | Polish, audio, balance, real-GPU testing | Release candidate through the installer |
+
+## 10. Risks
+- **Prediction UX:** if marking predictions feels like chores, the pillar fails. Prototype early (M1/M3) with paper-like quick UI.
+- **AI feels random or psychic:** mitigate with doctrines, visible tells, seeded determinism, and tuning tools.
+- **Scope:** 3D tent + battlefield + campaign is a lot. Rules-first order (M1 before art) keeps it shippable.
+- **Engine maturity:** real-GPU behaviour untested; schedule hardware testing before M4.
+
+## 11. Open questions for the concept owner
+1. Era and setting (WWI, WWII, fictional)? The title and "beans" suggest WWII-ish; this draft is era-agnostic.
+2. Is a wrong prediction a *penalty* mechanic (as drafted) or does the game simply hide enemy info and let you guess?
+3. Grid-based map, or free movement with ranges?
+4. Is the player ever allowed out of the tent, or is it purely tent-bound?
+5. Permadeath for squads/officers? Campaign or standalone scenarios?
+6. Tone: grim, dark-comic, or grounded-humane?
+7. Target session length per scenario and per turn?
